@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+env/
+
+# Scraper temporary profile / session data
+temp_profile/
+
+# OS generated files
+.DS_Store
+Thumbs.db

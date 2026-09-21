@@ -1,0 +1,10 @@
+[project]
+name = "gmaps-review-filter"
+version = "0.1.0"
+description = "Filter Google Maps reviews to detect fake reviews and compute trusted average rating"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.12.0",
+    "playwright>=1.59.0",
+    "requests>=2.31.0",
+]
