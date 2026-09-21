@@ -1,4 +1,4 @@
-# gmaps-review-filter
+# google-maps-review-filter
 
 CLI tool that scrapes Google Maps reviews for a place URL, then filters out low-activity reviewers to compute a trusted rating.
 
