@@ -10,6 +10,9 @@ env/
 # Scraper temporary profile / session data
 temp_profile/
 
+# Debug screenshots
+*.png
+
 # OS generated files
 .DS_Store
 Thumbs.db

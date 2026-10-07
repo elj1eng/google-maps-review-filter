@@ -53,8 +53,7 @@ def main():
             ratio = report["trusted_count"] / (report["filtered_count"] + report["trusted_count"]) * 100 if report["filtered_count"] else 100.0
             out = (
                 f"\n{summary['name']}\n"
-                f"--- SPOT SUMMARY ---\n"
-                f"Rating: {summary['rating']} | Total Reviews: {summary['total']}\n"
+                f"Rating: {summary['rating']} ({summary['total']})\n"
                 f"\n"
                 f"--- ANALYSIS (Sample: {report['total_scanned']} reviews) ---\n"
                 f"{red}Filtered out (<= {limit} reviews): {report['filtered_count']}{reset}\n"
@@ -68,6 +67,9 @@ def main():
         except (KeyboardInterrupt, EOFError):
             print("\nGoodbye!")
             break
+        except Exception as e:
+            print(f"Error: {e}")
+            continue
 
 
 if __name__ == "__main__":
