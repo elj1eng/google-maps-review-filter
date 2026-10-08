@@ -82,19 +82,23 @@ playwright install chromium
 
 ## Usage
 
-### With `uv`:
 ```bash
 uv run main.py "https://www.google.com/maps/place/..."
 # or interactive:
 uv run main.py
+# (pip/venv equivalent: python main.py ...)
 ```
 
-### With traditional `pip` / activated venv:
-```bash
-python main.py "https://www.google.com/maps/place/..."
-```
+Options:
 
-Enter `q` to quit.
+| Flag | Default | Meaning |
+|---|---|---|
+| `--target N` | 210 | reviews to load per spot |
+| `--trust-threshold N` | 10 | reviewers above N reviews count as trusted |
+| `--json` | off | machine-readable JSON on stdout (diagnostics go to stderr) |
+| `--verbose` | off | debug logging from the scraper |
+
+Exit codes: `0` success, `1` scrape/analysis failure, `2` bad URL.
 
 ### Example Output
 

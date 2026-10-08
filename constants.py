@@ -50,6 +50,27 @@ THRESHOLDS = {
     "MIN_REVIEWS_FOR_TRUST": 10,
 }
 
+# Human-language strings for UI matching. The review-count pattern in
+# analyzer.REVIEW_COUNT_RE already covers en+vi; this table covers the
+# scraper's tab/chip/option matching. Provider names ("Google") are proper
+# nouns and match case-insensitively in every locale. "vi" entries are
+# best-effort: keywords fall back to English where Maps keeps English
+# labels. Detect via <html lang>; anything non-vi falls back to "en".
+LOCALE_STRINGS = {
+    "en": {
+        "reviews_tab": ("review",),
+        "filter_chip": ("review",),
+        "sort_chip_exclude": ("relevant",),
+        "google_source": ("google",),
+    },
+    "vi": {
+        "reviews_tab": ("đánh giá", "review"),
+        "filter_chip": ("đánh giá", "review"),
+        "sort_chip_exclude": ("relevant", "liên quan"),
+        "google_source": ("google",),
+    },
+}
+
 BROWSER_CONFIG = {
     "VIEWPORT": {"width": 1280, "height": 900},
     "TIMEOUT": 15000,

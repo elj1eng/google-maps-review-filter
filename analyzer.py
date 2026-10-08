@@ -8,9 +8,13 @@ REVIEW_COUNT_RE = re.compile(r"(\d[\d,]*)\s*(?:reviews?|đánh giá)", re.IGNORE
 
 
 class ReviewAnalyzer:
-    def __init__(self, html: str):
+    def __init__(self, html: str, trust_limit=None):
         self.soup = BeautifulSoup(html, "html.parser")
-        self.limit = THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]
+        self.limit = (
+            trust_limit
+            if trust_limit is not None
+            else THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]
+        )
 
     def get_spot_summary(self) -> dict:
         summary = {"rating": "N/A", "total": "N/A", "name": "Unknown Place"}

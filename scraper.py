@@ -1,3 +1,4 @@
+import logging
 import re
 import shutil
 import tempfile
@@ -6,7 +7,9 @@ import urllib.parse
 
 from playwright.sync_api import sync_playwright
 
-from constants import BROWSER_CONFIG, CSS_SELECTORS, SELECTOR_META
+from constants import BROWSER_CONFIG, CSS_SELECTORS, LOCALE_STRINGS, SELECTOR_META
+
+logger = logging.getLogger(__name__)
 
 LIMITED_VIEW_TEXT = "limited view of Google Maps"
 LIMITED_VIEW_MSG = "Google served a 'limited view' of Maps."
@@ -16,6 +19,17 @@ WEBDRIVER_MASK_JS = (
 
 # Hosts whose links resolve (via redirect) to a place page.
 _SHORT_HOSTS = ("maps.app.goo.gl", "goo.gl")
+
+
+def _matches_any(text, keywords):
+    """True when any keyword occurs in text (case-insensitive)."""
+    lowered = (text or "").lower()
+    return any(k in lowered for k in keywords)
+
+
+def detect_lang(lang_tag):
+    """Map an <html lang> value to a LOCALE_STRINGS key ("vi" or "en")."""
+    return "vi" if (lang_tag or "").lower().startswith("vi") else "en"
 
 
 def validate_place_url(url: str) -> str:
@@ -50,9 +64,10 @@ class PermanentScrapeError(Exception):
 
 
 class MapsScraper:
-    def __init__(self, url):
+    def __init__(self, url, target_reviews=None):
         # Fail fast on non-place URLs: no browser is launched for them.
         self.url = validate_place_url(url)
+        self.target = target_reviews or BROWSER_CONFIG.get("TARGET_REVIEWS", 210)
         self.profile_path = None
 
     def fetch_html(self):
@@ -69,9 +84,11 @@ class MapsScraper:
                 return self._fetch_once()
             except TransientScrapeError as exc:
                 last_error = exc
-                print(
-                    f"Attempt {attempt}/{attempts}: {exc} — "
-                    "retrying with a fresh session..."
+                logger.warning(
+                    "Attempt %d/%d: %s — retrying with a fresh session...",
+                    attempt,
+                    attempts,
+                    exc,
                 )
                 # Exponential backoff (3s, 6s, 12s, 24s, 30s) to ride out
                 # limited-view bursts instead of hammering Google.
@@ -148,22 +165,32 @@ class MapsScraper:
         except Exception:
             return False
 
+    @staticmethod
+    def _page_lang(page):
+        """Detect the page language for locale-aware tab/chip matching."""
+        try:
+            return detect_lang(page.evaluate("document.documentElement.lang"))
+        except Exception:
+            return "en"
+
     def _open_reviews_tab(self, page):
+        lang = self._page_lang(page)
+        tab_keywords = LOCALE_STRINGS[lang]["reviews_tab"]
         tabs = self._locate(page, "REVIEWS_TAB")
         for i in range(tabs.count()):
             try:
                 label = tabs.nth(i).inner_text(timeout=2000).lower()
             except Exception:
                 continue
-            if "review" in label:
+            if _matches_any(label, tab_keywords):
                 tabs.nth(i).click(force=True)
                 break
         else:
-            print("Warning: Reviews tab not found; using whatever is visible.")
+            logger.warning("Reviews tab not found; using whatever is visible.")
 
         # Hotel tabs: filter to Google-only reviews via the filter chip.
         # Restaurant pages have no filter chips: no-op there.
-        self._select_google_source(page)
+        self._select_google_source(page, lang)
 
         # Wait for the review list to actually render before scrolling.
         # Without this, _scroll_reviews can start while only the first
@@ -174,7 +201,7 @@ class MapsScraper:
                 timeout=BROWSER_CONFIG["TIMEOUT"],
             )
         except Exception:
-            print("Warning: No review cards appeared after opening reviews tab.")
+            logger.warning("No review cards appeared after opening reviews tab.")
             return False
         time.sleep(2)
         return True
@@ -198,7 +225,7 @@ class MapsScraper:
                 continue
         return page.locator(candidates[0])
 
-    def _select_google_source(self, page):
+    def _select_google_source(self, page, lang="en"):
         """Filter a hotel Reviews tab to Google-only via the filter chip.
 
         Hotel tabs have filter chips (button.HQzyZ: "All reviews",
@@ -211,6 +238,7 @@ class MapsScraper:
         """
         chip = None
         chip_label = ""
+        strings = LOCALE_STRINGS.get(lang, LOCALE_STRINGS["en"])
         try:
             chips = self._locate(page, "REVIEW_FILTER_CHIP")
             for i in range(chips.count()):
@@ -218,7 +246,9 @@ class MapsScraper:
                     label = chips.nth(i).inner_text(timeout=2000).strip()
                 except Exception:
                     continue
-                if "review" in label.lower() and "relevant" not in label.lower():
+                if _matches_any(label, strings["filter_chip"]) and not _matches_any(
+                    label, strings["sort_chip_exclude"]
+                ):
                     chip = chips.nth(i)
                     chip_label = label
                     break
@@ -226,8 +256,8 @@ class MapsScraper:
             return
         if chip is None:
             return  # no filter chip: restaurant page or changed markup
-        if chip_label.lower() == "google":
-            print("Review filter already 'Google'.")
+        if chip_label.lower() in strings["google_source"]:
+            logger.info("Review filter already 'Google'.")
             return
 
         card_sel = f".{CSS_SELECTORS['REVIEW_CARD']}"
@@ -256,9 +286,9 @@ class MapsScraper:
             except Exception:
                 continue
             names.append(text)
-            if text.lower() == "google" and google_idx < 0:
+            if text.lower() in strings["google_source"] and google_idx < 0:
                 google_idx = i
-        print(f"Review filter options: {names or ['(unreadable)']}")
+        logger.info("Review filter options: %s", names or ["(unreadable)"])
         if google_idx < 0:
             raise PermanentScrapeError("review filter offers no Google option")
 
@@ -283,7 +313,7 @@ class MapsScraper:
                 f"switching review filter to Google failed ({exc})"
             )
         time.sleep(2)
-        print("Review filter switched to 'Google'.")
+        logger.info("Review filter switched to 'Google'.")
 
     def _find_scrollable_pane(self, page):
         """Return a handle to the actual scrollable reviews container.
@@ -342,17 +372,17 @@ class MapsScraper:
             return False
 
     def _scroll_reviews(self, page):
-        print("Scrolling review list dynamically...")
+        logger.info("Scrolling review list dynamically...")
         card_sel = f".{CSS_SELECTORS['REVIEW_CARD']}"
         stall_limit = BROWSER_CONFIG.get("SCROLL_STALL_LIMIT", 5)
         sleep_s = BROWSER_CONFIG.get("SCROLL_SLEEP_S", 1.5)
         wait_ms = BROWSER_CONFIG.get("DYNAMIC_WAIT_MS", 4000)
         wheel_px = BROWSER_CONFIG.get("SCROLL_WHEEL_PX", 2000)
-        target = BROWSER_CONFIG.get("TARGET_REVIEWS", 210)
+        target = self.target
 
         pane = self._find_scrollable_pane(page)
         if pane is None:
-            print("Warning: scrollable reviews pane not found.")
+            logger.warning("Scrollable reviews pane not found.")
             return 0
 
         no_change_count = 0
@@ -364,7 +394,9 @@ class MapsScraper:
 
             # Reached the desired sample size: done.
             if prev_count >= target:
-                print(f"Reached target: {prev_count} reviews (target {target}).")
+                logger.info(
+                    "Reached target: %d reviews (target %d).", prev_count, target
+                )
                 break
 
             # Re-resolve the pane periodically, after stalls, or after
@@ -416,26 +448,27 @@ class MapsScraper:
             if new_count == prev_count:
                 no_change_count += 1
                 if no_change_count >= stall_limit:
-                    print(
-                        f"Scrolling done: {new_count} reviews "
-                        f"(stable for {stall_limit} checks)."
+                    logger.info(
+                        "Scrolling done: %d reviews (stable for %d checks).",
+                        new_count,
+                        stall_limit,
                     )
                     break
             else:
                 no_change_count = 0
                 if (i + 1) % 10 == 0:
-                    print(f"  ... loaded {new_count} reviews so far")
+                    logger.info("  ... loaded %d reviews so far", new_count)
 
         try:
             final = page.locator(card_sel).count()
         except Exception:
             final = 0
-        print(f"Finished scrolling: {final} review cards in DOM.")
+        logger.info("Finished scrolling: %d review cards in DOM.", final)
         min_expected = BROWSER_CONFIG.get("MIN_EXPECTED_REVIEWS", 10)
         if 0 < final < min_expected:
-            print(
-                f"Warning: only {final} reviews loaded (expected more). "
-                "Page may have loaded slowly or Maps rate-limited this run; "
-                "try again."
+            logger.warning(
+                "Only %d reviews loaded (expected more). Page may have loaded "
+                "slowly or Maps rate-limited this run; try again.",
+                final,
             )
         return final
