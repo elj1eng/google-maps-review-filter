@@ -87,25 +87,30 @@ def format_human(summary, report, limit):
     n_classified = n_filt + n_trust
     ratio = f"{n_trust / n_classified * 100:.1f}%" if n_classified else "N/A"
     unparseable = (
-        f"\n{red}Warning: {n_bad} cards had no parseable "
+        f"{red}Warning: {n_bad} cards had no parseable "
         f"rating (markup may have changed).{reset}"
         if n_bad
         else ""
     )
-    return (
-        f"\n{summary['name']}\n"
-        f"Rating: {summary['rating']} ({summary['total']})\n"
-        f"\n"
-        f"--- ANALYSIS (Sample: {report['total_scanned']} reviews) ---\n"
-        f"{red}Filtered out (<= {limit} reviews): {n_filt}{reset}\n"
-        f"Trusted reviewers (> {limit} reviews): {n_trust}\n"
-        f"{green}Trusted review ratio: {ratio}{reset}\n"
-        f"{unparseable}\n"
-        f"\n"
-        f"Average rating (all): {report['all_avg']:.2f} / 5\n"
-        f"{green}Average rating (trusted only): "
-        f"{report['trusted_avg']:.2f} / 5{reset}\n"
-    )
+    parts = [
+        "",
+        summary["name"],
+        f"Rating: {summary['rating']} ({summary['total']})",
+        "",
+        f"--- ANALYSIS (Sample: {report['total_scanned']} reviews) ---",
+        f"{red}Filtered out (<= {limit} reviews): {n_filt}{reset}",
+        f"Trusted reviewers (> {limit} reviews): {n_trust}",
+        f"{green}Trusted review ratio: {ratio}{reset}",
+    ]
+    if unparseable:
+        parts += ["", unparseable]
+    parts += [
+        "",
+        f"Average rating (all): {report['all_avg']:.2f} / 5",
+        f"{green}Average rating (trusted only): {report['trusted_avg']:.2f} / 5{reset}",
+        "",
+    ]
+    return "\n".join(parts)
 
 
 def run_once(url, *, target, trust_threshold, as_json):

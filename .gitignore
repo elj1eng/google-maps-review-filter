@@ -7,9 +7,6 @@ __pycache__/
 venv/
 env/
 
-# Scraper temporary profile / session data
-temp_profile/
-
 # Debug screenshots
 *.png
 

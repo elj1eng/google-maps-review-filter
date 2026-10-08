@@ -4,13 +4,13 @@ CLI tool that scrapes Google Maps reviews for a place URL, then filters out low-
 
 ## How it works
 
-1. `main.py` validates the URL, runs `MapsScraper.fetch_html()`, then `ReviewAnalyzer`.
-2. `scraper.py` uses Playwright (headless Chromium) to open the place page, click the Reviews tab, auto-scroll to load review cards, and return page HTML.
+1. `main.py` validates the URL (reachable + a `/maps/place/` page — search-list URLs are rejected before any browser launches), runs `MapsScraper.fetch_html()`, then `ReviewAnalyzer`.
+2. `scraper.py` uses Playwright (headless Chromium) to open the place page, click the Reviews tab, filter hotel tabs to Google-only reviews, auto-scroll to load review cards, and return page HTML. Transient failures (anti-bot limited view, render flakes) retry with backoff; deterministic failures raise immediately.
 3. `analyzer.py` parses with BeautifulSoup:
    - Spot summary: name, rating, total reviews
    - Per-review: star rating + reviewer review count
-   - Split by `THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]` (default 10): `<= limit` = filtered, `> limit` = trusted
-   - Reports trusted ratio, all avg vs trusted avg.
+   - Split by `THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]` (default 10, or `--trust-threshold`): `<= limit` = filtered, `> limit` = trusted
+   - Reports trusted ratio, all avg vs trusted avg. Cards with no parseable rating are excluded from both averages and reported as unparseable (a markup-change tripwire, not silent data loss).
 
 ## The Algorithms
 
@@ -44,13 +44,15 @@ $$
 Ratio_{Trusted} = \frac{N_{trusted}}{N_{filtered} + N_{trusted}} \times 100\%
 $$
 
-- The report shows `Average rating (all)` vs `Average rating (trusted only)` so you can see how much low-activity reviews skew the score.
+over classified cards only (`N/A` when none classified).
+
+- The report shows `Average rating (all)` vs `Average rating (trusted only)` so you can see how much low-activity reviews skew the score. Both averages cover classified cards only; cards with no parseable rating are counted separately (`Unparseable cards`), and the ratio reads `N/A` when nothing was classified.
 
 > [!NOTE]
-> **Tuning for your use case:** All thresholds live in `constants.py` and are intentionally conservative defaults, not hard rules.
-> - `THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]` (default `10`): lower it (e.g. `3-5`) for stricter burner detection in tourist-heavy areas, or raise it (e.g. `20-50`) for high-trust professional vetting.
+> **Tuning for your use case:** Prefer the CLI flags (`--target`, `--trust-threshold`); `constants.py` holds the defaults.
+> - `--trust-threshold` (default `10`): raise it (e.g. `20-50`) to filter more aggressively (stricter burner detection for high-trust vetting), or lower it (e.g. `3-5`) to filter only the barest accounts in tourist-heavy areas.
 > - `BROWSER_CONFIG["SCROLL_LIMIT"]`, `["SCROLL_STALL_LIMIT"]`, `["DYNAMIC_WAIT_MS"]`: increase for large spots (1000+ reviews) to enlarge `N_total` and reduce sampling bias; decrease for faster CI / low-bandwidth runs.
-> - `BROWSER_CONFIG["MIN_EXPECTED_REVIEWS"]`: safety-net trigger for a second scroll pass, raise it if you routinely expect 100+ cards.
+> - `BROWSER_CONFIG["MIN_EXPECTED_REVIEWS"]`: warns when fewer cards loaded than expected — a smoke signal for slow loads or rate limiting, not a second scroll pass.
 > Validate any change against 3-5 known spots (1 clearly legit, 1 clearly spammy, 1 borderline) before treating the output as production signal. These heuristics flag *suspicion*, not proof of fraud.
 
 ## Requirements
@@ -102,29 +104,30 @@ Exit codes: `0` success, `1` scrape/analysis failure, `2` bad URL.
 
 ### Example Output
 
+Real output carries ANSI colors; shown here plain. Figures below are from an
+actual run (The Ritz London, `--trust-threshold 10`):
+
 ```
-Cafe Example
---- SPOT SUMMARY ---
-Rating: 4.5 | Total Reviews: 1250
+The Ritz London
+Rating: 4.6 (7904)
 
---- ANALYSIS (Sample: 120 reviews) ---
-Filtered out (<= 10 reviews): 35
-Trusted reviewers (> 10 reviews): 85
-Trusted review ratio: 70.8%
+--- ANALYSIS (Sample: 210 reviews) ---
+Filtered out (<= 10 reviews): 56
+Trusted reviewers (> 10 reviews): 154
+Trusted review ratio: 73.3%
 
-Average rating (all): 4.62 / 5
-Average rating (trusted only): 4.31 / 5
+Average rating (all): 4.38 / 5
+Average rating (trusted only): 4.44 / 5
 ```
 
 ## Project Structure
 
-- `main.py`: CLI entry point, URL validation, report printing.
-- `scraper.py`: Playwright navigation, Reviews tab handling, dynamic scroll.
-- `analyzer.py`: BeautifulSoup parsing, spot summary, trusted/filtered split.
-- `constants.py`: CSS selectors, thresholds, browser tuning knobs.
-- `pyproject.toml` / `uv.lock`: dependencies.
-- `tests/`: pytest suite for the analyzer with trimmed golden HTML fixtures
-  (`tests/fixtures/`). Scraper/`main.py` are intentionally untested (live browser).
+- `main.py`: argparse CLI (`--target`, `--trust-threshold`, `--json`, `--verbose`), exit codes 0/1/2, human/JSON report rendering.
+- `scraper.py`: Playwright navigation, Reviews tab handling, hotel Google-only filter, dynamic scroll; transient vs permanent error taxonomy.
+- `analyzer.py`: BeautifulSoup parsing, spot summary, trusted/filtered split (fully typed, 100% covered).
+- `constants.py`: CSS selectors + `SELECTOR_META` volatility registry, thresholds, browser tuning, `LOCALE_STRINGS` (en/vi UI matching).
+- `pyproject.toml` / `uv.lock`: dependencies (`requirements.txt` generated from these).
+- `tests/`: pytest suite — analyzer golden fixtures plus offline scraper-policy and CLI tests. Only `tests/refresh_fixtures.py` needs the network.
 
 ## Testing
 
@@ -144,8 +147,10 @@ and intentionally not refreshed (live scrapes are Google-only by design).
 
 ## Limitations
 
-- Sample-based: analyzes loaded review cards (`N_total`), not all reviews for the spot.
-- Selector fragility: Google Maps markup changes frequently; update `constants.py` when parsing returns empty.
+- Sample-based: analyzes loaded review cards (`N_total`), not all reviews for the spot. Averages and ratio cover classified cards; unparseable cards are reported, not silently dropped.
+- Place pages only: `/maps/place/` URLs (or Maps short links). Search-list URLs are rejected up front.
+- Selector fragility: Google Maps markup changes frequently; `SELECTOR_META` in `constants.py` records when each selector was last observed — bump it when you update one.
+- Locales: UI matching covers English and Vietnamese (`LOCALE_STRINGS`); other locales fall back to English keywords and may fail to open tabs.
 - Rate limiting / CAPTCHA: aggressive scrolling may trigger throttling; slow down `SCROLL_*` settings if so.
 - Heuristic only: review count per reviewer is a weak fraud signal — high-activity accounts can still be fake, low-activity accounts can still be genuine.
 
@@ -159,5 +164,5 @@ MIT — see [LICENSE](LICENSE).
 
 ## Notes
 
-- Uses a temporary `temp_profile/` dir for Playwright (ignored by git, auto-cleaned).
-- Selectors live in `constants.py` and may need updates if Google changes Maps markup.
+- Each scrape attempt runs in a throwaway browser profile (`tempfile.mkdtemp`), auto-cleaned afterwards — concurrent runs never share state.
+- Selectors live in `constants.py` and may need updates if Google changes Maps markup (see `SELECTOR_META`).
