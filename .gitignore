@@ -16,3 +16,7 @@ temp_profile/
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Coverage
+.coverage
+coverage.xml

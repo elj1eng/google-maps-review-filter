@@ -7,7 +7,13 @@ import urllib.parse
 
 from playwright.sync_api import sync_playwright
 
-from constants import BROWSER_CONFIG, CSS_SELECTORS, LOCALE_STRINGS, SELECTOR_META
+from constants import (
+    BROWSER_CONFIG,
+    CSS_SELECTORS,
+    LOCALE_STRINGS,
+    SCROLLABLE_PANE_CANDIDATES,
+    SELECTOR_META,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -321,7 +327,7 @@ class MapsScraper:
         Picks the candidate div with the largest scrollable area.
         Falls back to the first `div[role="main"] div[tabindex="-1"]`.
         """
-        candidates = CSS_SELECTORS["SCROLLABLE_PANE_CANDIDATES"]
+        candidates = SCROLLABLE_PANE_CANDIDATES
         best = None
         best_h = 0
         for sel in candidates:

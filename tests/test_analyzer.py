@@ -166,9 +166,33 @@ def test_missing_count_is_filtered_not_trusted():
     assert rep["trusted_count"] == 0
 
 
+def test_metadata_without_count_is_filtered():
+    html = (
+        '<div class="jftiEf"><div class="RfnDt">Local Guide</div>'
+        '<span class="fontBodyLarge fzvQIb">5/5</span></div>'
+    )
+    rep = ReviewAnalyzer(page(html)).analyze_reviews()
+    assert rep["filtered_count"] == 1
+    assert rep["trusted_count"] == 0
+
+
 def test_vietnamese_count():
     rep = ReviewAnalyzer(
         page(card(count_text="7 đánh giá", rating_text="5/5"))
     ).analyze_reviews()
     assert rep["filtered_count"] == 1
     assert rep["trusted_count"] == 0
+
+
+def test_non_string_aria_label_ignored():
+    """Defensive: multi-valued attrs (lists) never parse as ratings."""
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(
+        '<div class="jftiEf"><div class="RfnDt">50 reviews</div></div>',
+        "html.parser",
+    )
+    tag = soup.new_tag("span", attrs={"role": "img"})
+    tag["aria-label"] = ["5", "stars"]
+    soup.div.append(tag)
+    assert ReviewAnalyzer("<html></html>")._star_rating(soup.div) is None

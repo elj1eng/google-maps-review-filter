@@ -1,4 +1,12 @@
-CSS_SELECTORS = {
+from typing import Any, TypedDict
+
+
+class SelectorMeta(TypedDict):
+    observed: str
+    fallbacks: list[str]
+
+
+CSS_SELECTORS: dict[str, str] = {
     "BUSINESS_TITLE": "h1",
     "REVIEWS_TAB": "div.Gpq6kf.NlVald",
     "REVIEW_CARD": "jftiEf",
@@ -7,12 +15,6 @@ CSS_SELECTORS = {
     "RATING_TEXT": "fzvQIb",
     "TOTAL_REVIEWS": "fontBodySmall",
     "PLACE_NAME": "cGRe9e",
-    "SCROLLABLE_PANE_CANDIDATES": [
-        "div.m6QErb.DxyBCb.kA9KIf.dS8AEf",
-        'div[role="main"] div.m6QErb',
-        'div[role="main"] div[tabindex="-1"]',
-        'div[tabindex="-1"]',
-    ],
     # Hotel review filter: the "All reviews" chip (button.HQzyZ) opens a
     # per-platform menu ("Google", "Tripadvisor", ...). Absent on
     # restaurant pages. Option label class rotates; match by text.
@@ -20,11 +22,18 @@ CSS_SELECTORS = {
     "REVIEW_SOURCE_OPTION": "div.twHv4e div.mLuXec",
 }
 
+SCROLLABLE_PANE_CANDIDATES: list[str] = [
+    "div.m6QErb.DxyBCb.kA9KIf.dS8AEf",
+    'div[role="main"] div.m6QErb',
+    'div[role="main"] div[tabindex="-1"]',
+    'div[tabindex="-1"]',
+]
+
 # Volatility registry for the obfuscated Maps classes above. Each entry
 # records when the primary was last observed plus fallback selectors tried
 # in order by MapsScraper._locate. "observed" must be bumped whenever a
 # primary is updated after a Maps markup change.
-SELECTOR_META = {
+SELECTOR_META: dict[str, SelectorMeta] = {
     "BUSINESS_TITLE": {"observed": "2026-10", "fallbacks": []},
     "REVIEWS_TAB": {
         "observed": "2026-10",
@@ -46,7 +55,7 @@ SELECTOR_META = {
     },
 }
 
-THRESHOLDS = {
+THRESHOLDS: dict[str, int] = {
     "MIN_REVIEWS_FOR_TRUST": 10,
 }
 
@@ -56,7 +65,7 @@ THRESHOLDS = {
 # nouns and match case-insensitively in every locale. "vi" entries are
 # best-effort: keywords fall back to English where Maps keeps English
 # labels. Detect via <html lang>; anything non-vi falls back to "en".
-LOCALE_STRINGS = {
+LOCALE_STRINGS: dict[str, dict[str, tuple[str, ...]]] = {
     "en": {
         "reviews_tab": ("review",),
         "filter_chip": ("review",),
@@ -71,7 +80,7 @@ LOCALE_STRINGS = {
     },
 }
 
-BROWSER_CONFIG = {
+BROWSER_CONFIG: dict[str, Any] = {
     "VIEWPORT": {"width": 1280, "height": 900},
     "TIMEOUT": 15000,
     "SCROLL_LIMIT": 40,

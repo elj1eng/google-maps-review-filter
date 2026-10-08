@@ -1,6 +1,6 @@
 import re
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 from constants import CSS_SELECTORS, THRESHOLDS
 
@@ -8,15 +8,15 @@ REVIEW_COUNT_RE = re.compile(r"(\d[\d,]*)\s*(?:reviews?|đánh giá)", re.IGNORE
 
 
 class ReviewAnalyzer:
-    def __init__(self, html: str, trust_limit=None):
+    def __init__(self, html: str, trust_limit: int | None = None):
         self.soup = BeautifulSoup(html, "html.parser")
-        self.limit = (
+        self.limit: int = (
             trust_limit
             if trust_limit is not None
             else THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]
         )
 
-    def get_spot_summary(self) -> dict:
+    def get_spot_summary(self) -> dict[str, str]:
         summary = {"rating": "N/A", "total": "N/A", "name": "Unknown Place"}
 
         button = self.soup.find("button", attrs={"data-bundle-id": True})
@@ -44,12 +44,12 @@ class ReviewAnalyzer:
 
         return summary
 
-    def analyze_reviews(self) -> dict:
+    def analyze_reviews(self) -> dict[str, int | float]:
         cards = self.soup.find_all(
             "div", class_=re.compile(CSS_SELECTORS["REVIEW_CARD"])
         )
 
-        all_ratings = []
+        all_ratings: list[dict[str, int | float]] = []
         for card in cards:
             count = self._reviewer_count(card)
             rating = self._star_rating(card)
@@ -72,43 +72,40 @@ class ReviewAnalyzer:
             "no_rating_count": total - len(all_ratings),
         }
 
-    def _reviewer_count(self, card) -> int:
+    def _reviewer_count(self, card: Tag) -> int:
         meta = card.find("div", class_=re.compile(CSS_SELECTORS["METADATA"]))
         if not meta:
             return 0
         match = REVIEW_COUNT_RE.search(meta.get_text(" ", strip=True))
         if not match:
             return 0
-        try:
-            return int(match.group(1).replace(",", ""))
-        except ValueError:
-            return 0
+        # Safe without try/except: the regex admits only digits and commas.
+        return int(match.group(1).replace(",", ""))
 
-    def _star_rating(self, card):
+    def _star_rating(self, card: Tag) -> float | None:
         for span in card.find_all("span", attrs={"role": "img"}):
-            if span.has_attr("aria-label"):
-                match = re.search(r"(\d+[,.]?\d*)", span["aria-label"])
-                if match:
-                    try:
-                        rating = float(match.group(1).replace(",", "."))
-                        if 1 <= rating <= 5:
-                            return rating
-                    except ValueError:
-                        continue
+            label = span.get("aria-label")
+            if not isinstance(label, str):
+                continue
+            match = re.search(r"(\d+[,.]?\d*)", label)
+            if match:
+                # Safe: the regex admits only digits with one optional
+                # decimal separator.
+                rating = float(match.group(1).replace(",", "."))
+                if 1 <= rating <= 5:
+                    return rating
         # Hotel cards render the rating as "N/5" text instead of star icons.
         for span in card.find_all(
             "span", class_=re.compile(CSS_SELECTORS["RATING_TEXT"])
         ):
             match = re.fullmatch(r"\s*(\d(?:[,.]\d)?)\s*/\s*5\s*", span.get_text())
             if match:
-                try:
-                    rating = float(match.group(1).replace(",", "."))
-                    if 1 <= rating <= 5:
-                        return rating
-                except ValueError:
-                    continue
+                # Safe: single digit with one optional decimal always parses.
+                rating = float(match.group(1).replace(",", "."))
+                if 1 <= rating <= 5:
+                    return rating
         return None
 
 
-def _average(values) -> float:
+def _average(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0

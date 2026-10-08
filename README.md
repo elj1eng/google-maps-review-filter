@@ -130,7 +130,17 @@ Average rating (trusted only): 4.31 / 5
 
 ```bash
 uv run pytest tests/   # offline, ~1s
+uv run ruff check . && uv run ruff format --check .
+uv run mypy --strict analyzer.py constants.py
+uv run coverage run -m pytest tests/ -q
+uv run coverage report --include="analyzer.py,constants.py" --fail-under=100
 ```
+
+All of the above runs in CI on push/PR. Fixtures are trimmed excerpts of
+real pages (`tests/fixtures/`, provenance in file headers); refresh them
+with `uv run python tests/refresh_fixtures.py` (live Google load — sparing),
+then update the frozen assertions to match. `hotel_mixed.html` is archival
+and intentionally not refreshed (live scrapes are Google-only by design).
 
 ## Limitations
 
