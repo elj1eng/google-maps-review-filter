@@ -77,6 +77,9 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
+> `requirements.txt` is generated from `pyproject.toml` — do not hand-edit:
+> `uv pip compile pyproject.toml --group dev -o requirements.txt`.
+
 ## Usage
 
 ### With `uv`:
@@ -116,6 +119,14 @@ Average rating (trusted only): 4.31 / 5
 - `analyzer.py`: BeautifulSoup parsing, spot summary, trusted/filtered split.
 - `constants.py`: CSS selectors, thresholds, browser tuning knobs.
 - `pyproject.toml` / `uv.lock`: dependencies.
+- `tests/`: pytest suite for the analyzer with trimmed golden HTML fixtures
+  (`tests/fixtures/`). Scraper/`main.py` are intentionally untested (live browser).
+
+## Testing
+
+```bash
+uv run pytest tests/   # offline, ~1s
+```
 
 ## Limitations
 

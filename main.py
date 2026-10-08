@@ -2,8 +2,8 @@ import sys
 
 import requests
 
-from scraper import MapsScraper
 from analyzer import ReviewAnalyzer
+from scraper import MapsScraper
 
 if sys.stdout.encoding.lower() != "utf-8":
     sys.stdout.reconfigure(encoding="utf-8")
@@ -21,13 +21,15 @@ def main():
     cli_url = sys.argv[1].strip() if len(sys.argv) > 1 else None
     while True:
         try:
-            target_url = cli_url if cli_url else input("\nEnter Google Maps URL (or 'q' to quit): ").strip()
+            target_url = (
+                cli_url
+                if cli_url
+                else input("\nEnter Google Maps URL (or 'q' to quit): ").strip()
+            )
             cli_url = None
-            if target_url.lower() == 'q':
+            if target_url.lower() == "q":
                 print("Goodbye!")
                 break
-                print("Error: No URL provided.")
-                continue
 
             print("Validating URL...")
             if not is_google_maps_responsive(target_url):
@@ -50,18 +52,30 @@ def main():
             green = "\033[32m"
             red = "\033[31m"
             reset = "\033[0m"
-            ratio = report["trusted_count"] / (report["filtered_count"] + report["trusted_count"]) * 100 if report["filtered_count"] else 100.0
+            n_filt = report["filtered_count"]
+            n_trust = report["trusted_count"]
+            n_bad = report["no_rating_count"]
+            n_classified = n_filt + n_trust
+            ratio = f"{n_trust / n_classified * 100:.1f}%" if n_classified else "N/A"
+            unparseable = (
+                f"\n{red}Warning: {n_bad} cards had no parseable "
+                f"rating (markup may have changed).{reset}"
+                if n_bad
+                else ""
+            )
             out = (
                 f"\n{summary['name']}\n"
                 f"Rating: {summary['rating']} ({summary['total']})\n"
                 f"\n"
                 f"--- ANALYSIS (Sample: {report['total_scanned']} reviews) ---\n"
-                f"{red}Filtered out (<= {limit} reviews): {report['filtered_count']}{reset}\n"
-                f"Trusted reviewers (> {limit} reviews): {report['trusted_count']}\n"
-                f"{green}Trusted review ratio: {ratio:.1f}%{reset}\n"
+                f"{red}Filtered out (<= {limit} reviews): {n_filt}{reset}\n"
+                f"Trusted reviewers (> {limit} reviews): {n_trust}\n"
+                f"{green}Trusted review ratio: {ratio}{reset}\n"
+                f"{unparseable}\n"
                 f"\n"
                 f"Average rating (all): {report['all_avg']:.2f} / 5\n"
-                f"{green}Average rating (trusted only): {report['trusted_avg']:.2f} / 5{reset}\n"
+                f"{green}Average rating (trusted only): "
+                f"{report['trusted_avg']:.2f} / 5{reset}\n"
             )
             print(out)
         except (KeyboardInterrupt, EOFError):

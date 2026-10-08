@@ -1,32 +1,73 @@
-import os
+import re
 import shutil
+import tempfile
 import time
+import urllib.parse
 
 from playwright.sync_api import sync_playwright
 
-from constants import CSS_SELECTORS, BROWSER_CONFIG
+from constants import BROWSER_CONFIG, CSS_SELECTORS, SELECTOR_META
 
 LIMITED_VIEW_TEXT = "limited view of Google Maps"
+LIMITED_VIEW_MSG = "Google served a 'limited view' of Maps."
+WEBDRIVER_MASK_JS = (
+    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+)
+
+# Hosts whose links resolve (via redirect) to a place page.
+_SHORT_HOSTS = ("maps.app.goo.gl", "goo.gl")
 
 
-class IncompleteScrape(Exception):
-    """Maps served a truncated "limited view" review list; retry with a fresh session."""
+def validate_place_url(url: str) -> str:
+    """Reject non-place URLs before launching a browser.
+
+    Search-list and homepage URLs can never yield a reviews list;
+    failing here saves minutes of doomed retries. Raises
+    PermanentScrapeError (never retried).
+    """
+    cleaned = (url or "").strip()
+    try:
+        parsed = urllib.parse.urlparse(cleaned)
+    except Exception as exc:
+        raise PermanentScrapeError(f"not a valid URL ({exc})") from exc
+    host = parsed.netloc.lower()
+    if host in _SHORT_HOSTS or re.fullmatch(r"(www\.)?google\.[a-z.]+", host or ""):
+        if "/maps/place/" in parsed.path or host in _SHORT_HOSTS:
+            return cleaned
+        raise PermanentScrapeError(
+            "URL is not a place page (expected /maps/place/). "
+            "Search-list URLs have no reviews list — open the place first."
+        )
+    raise PermanentScrapeError("URL is not a Google Maps link.")
+
+
+class TransientScrapeError(Exception):
+    """Temporary failure (limited view, render flakes); retry fresh."""
+
+
+class PermanentScrapeError(Exception):
+    """Deterministic failure (bad URL, no Google source); do not retry."""
 
 
 class MapsScraper:
     def __init__(self, url):
-        self.url = url
-        self.profile_path = os.path.join(os.getcwd(), "temp_profile")
+        # Fail fast on non-place URLs: no browser is launched for them.
+        self.url = validate_place_url(url)
+        self.profile_path = None
 
     def fetch_html(self):
-        """Scrape the reviews page, retrying with a fresh session if Google
-        serves its anti-bot "limited view" (~5 reviews, banner shown)."""
+        """Scrape the reviews page.
+
+        Transient failures (limited view, render flakes) are retried with a
+        fresh session and backoff. Permanent failures (bad URL, no Google
+        source) raise immediately without burning retries.
+        """
         attempts = BROWSER_CONFIG.get("FETCH_ATTEMPTS", 3)
         last_error = None
         for attempt in range(1, attempts + 1):
             try:
                 return self._fetch_once()
-            except IncompleteScrape as exc:
+            except TransientScrapeError as exc:
                 last_error = exc
                 print(
                     f"Attempt {attempt}/{attempts}: {exc} — "
@@ -41,8 +82,9 @@ class MapsScraper:
         )
 
     def _fetch_once(self):
-        if os.path.exists(self.profile_path):
-            shutil.rmtree(self.profile_path)
+        # Fresh throwaway profile per attempt: concurrent runs never share
+        # state, and nothing depends on the working directory.
+        self.profile_path = tempfile.mkdtemp(prefix="gmaps_")
 
         try:
             with sync_playwright() as p:
@@ -54,9 +96,7 @@ class MapsScraper:
                     viewport=BROWSER_CONFIG["VIEWPORT"],
                 )
                 page = context.pages[0]
-                page.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-                )
+                page.add_init_script(WEBDRIVER_MASK_JS)
 
                 page.goto(self.url, wait_until="domcontentloaded")
                 try:
@@ -76,29 +116,30 @@ class MapsScraper:
                 # Fail fast: the anti-bot banner is already on the DOM when
                 # the limited view is active, so don't bother opening tabs.
                 if self._is_limited_view(page):
-                    raise IncompleteScrape("Google served a 'limited view' of Maps.")
+                    raise TransientScrapeError(LIMITED_VIEW_MSG)
 
                 opened = self._open_reviews_tab(page)
                 if opened and self._is_limited_view(page):
-                    raise IncompleteScrape("Google served a 'limited view' of Maps.")
+                    raise TransientScrapeError(LIMITED_VIEW_MSG)
 
                 loaded = self._scroll_reviews(page) if opened else 0
 
                 if not opened or loaded == 0:
                     # Search-list page or a place without a rendered reviews
                     # list — never return empty HTML silently.
-                    raise IncompleteScrape(
+                    raise TransientScrapeError(
                         "the page had no reviews list (wrong page or load failure)"
                     )
 
                 if self._is_limited_view(page):
-                    raise IncompleteScrape(
+                    raise TransientScrapeError(
                         "Google served a 'limited view' of Maps mid-scroll."
                     )
 
                 return page.content()
         finally:
             shutil.rmtree(self.profile_path, ignore_errors=True)
+            self.profile_path = None
 
     def _is_limited_view(self, page):
         """True when Google shows the anti-bot banner with only ~5 reviews."""
@@ -108,7 +149,7 @@ class MapsScraper:
             return False
 
     def _open_reviews_tab(self, page):
-        tabs = page.locator(CSS_SELECTORS["REVIEWS_TAB"])
+        tabs = self._locate(page, "REVIEWS_TAB")
         for i in range(tabs.count()):
             try:
                 label = tabs.nth(i).inner_text(timeout=2000).lower()
@@ -119,6 +160,10 @@ class MapsScraper:
                 break
         else:
             print("Warning: Reviews tab not found; using whatever is visible.")
+
+        # Hotel tabs: filter to Google-only reviews via the filter chip.
+        # Restaurant pages have no filter chips: no-op there.
+        self._select_google_source(page)
 
         # Wait for the review list to actually render before scrolling.
         # Without this, _scroll_reviews can start while only the first
@@ -133,6 +178,112 @@ class MapsScraper:
             return False
         time.sleep(2)
         return True
+
+    @staticmethod
+    def _locate(page, key):
+        """Locator for a registry key: primary, then fallbacks in order.
+
+        Returns the first candidate matching anything; if none match,
+        the primary (so callers keep their absent-element behavior).
+        """
+        candidates = [CSS_SELECTORS[key]] + SELECTOR_META.get(key, {}).get(
+            "fallbacks", []
+        )
+        for sel in candidates:
+            try:
+                loc = page.locator(sel)
+                if loc.count() > 0:
+                    return loc
+            except Exception:
+                continue
+        return page.locator(candidates[0])
+
+    def _select_google_source(self, page):
+        """Filter a hotel Reviews tab to Google-only via the filter chip.
+
+        Hotel tabs have filter chips (button.HQzyZ: "All reviews",
+        "Most relevant"). The "All reviews" chip opens a per-platform menu;
+        choosing "Google" drops third-party excerpts from the feed.
+        Restaurant pages have no filter chips: return immediately.
+        Raises PermanentScrapeError when Google is missing (deterministic
+        page fact: fail fast) or TransientScrapeError when the menu
+        interaction itself fails (render flake: worth a fresh session).
+        """
+        chip = None
+        chip_label = ""
+        try:
+            chips = self._locate(page, "REVIEW_FILTER_CHIP")
+            for i in range(chips.count()):
+                try:
+                    label = chips.nth(i).inner_text(timeout=2000).strip()
+                except Exception:
+                    continue
+                if "review" in label.lower() and "relevant" not in label.lower():
+                    chip = chips.nth(i)
+                    chip_label = label
+                    break
+        except Exception:
+            return
+        if chip is None:
+            return  # no filter chip: restaurant page or changed markup
+        if chip_label.lower() == "google":
+            print("Review filter already 'Google'.")
+            return
+
+        card_sel = f".{CSS_SELECTORS['REVIEW_CARD']}"
+        try:
+            chip.click(force=True)
+        except Exception as exc:
+            raise TransientScrapeError(f"could not open the review filter menu ({exc})")
+
+        # The menu renders on click; the option label class rotates, so
+        # match options by visible text, scoped to the open menu.
+        try:
+            page.wait_for_selector(
+                CSS_SELECTORS["REVIEW_SOURCE_OPTION"],
+                timeout=BROWSER_CONFIG["TIMEOUT"],
+            )
+        except Exception:
+            pass
+        options = self._locate(page, "REVIEW_SOURCE_OPTION")
+        if options.count() == 0:
+            raise TransientScrapeError("review filter menu opened with no options")
+
+        names, google_idx = [], -1
+        for i in range(options.count()):
+            try:
+                text = options.nth(i).inner_text(timeout=2000).strip()
+            except Exception:
+                continue
+            names.append(text)
+            if text.lower() == "google" and google_idx < 0:
+                google_idx = i
+        print(f"Review filter options: {names or ['(unreadable)']}")
+        if google_idx < 0:
+            raise PermanentScrapeError("review filter offers no Google option")
+
+        try:
+            first = page.locator(card_sel).first
+            try:
+                options.nth(google_idx).click(force=True)
+            except Exception:
+                # Fall back to the clickable option container.
+                options.nth(google_idx).locator(
+                    "xpath=ancestor::div[contains(@class,'twHv4e')]"
+                ).first.click(force=True)
+            try:
+                first.wait_for(state="detached", timeout=BROWSER_CONFIG["TIMEOUT"])
+            except Exception:
+                pass  # list updated in place; verify presence below
+            page.wait_for_selector(card_sel, timeout=BROWSER_CONFIG["TIMEOUT"])
+        except TransientScrapeError:
+            raise
+        except Exception as exc:
+            raise TransientScrapeError(
+                f"switching review filter to Google failed ({exc})"
+            )
+        time.sleep(2)
+        print("Review filter switched to 'Google'.")
 
     def _find_scrollable_pane(self, page):
         """Return a handle to the actual scrollable reviews container.
@@ -242,7 +393,9 @@ class MapsScraper:
             try:
                 cards = page.locator(card_sel)
                 if cards.count():
-                    cards.nth(cards.count() - 1).scroll_into_view_if_needed(timeout=2000)
+                    cards.nth(cards.count() - 1).scroll_into_view_if_needed(
+                        timeout=2000
+                    )
             except Exception:
                 pass
 
@@ -263,7 +416,10 @@ class MapsScraper:
             if new_count == prev_count:
                 no_change_count += 1
                 if no_change_count >= stall_limit:
-                    print(f"Scrolling done: {new_count} reviews (stable for {stall_limit} checks).")
+                    print(
+                        f"Scrolling done: {new_count} reviews "
+                        f"(stable for {stall_limit} checks)."
+                    )
                     break
             else:
                 no_change_count = 0

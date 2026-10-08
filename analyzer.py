@@ -23,26 +23,32 @@ class ReviewAnalyzer:
 
         header = self.soup.find("div", class_=re.compile("jANrlb"))
         if header:
-            rating_el = header.find("div", class_=re.compile(CSS_SELECTORS["RATING_VALUE"]))
+            rating_el = header.find(
+                "div", class_=re.compile(CSS_SELECTORS["RATING_VALUE"])
+            )
             if rating_el:
                 summary["rating"] = rating_el.get_text().strip()
-            total_el = header.find("div", class_=re.compile(CSS_SELECTORS["TOTAL_REVIEWS"]))
+            total_el = header.find(
+                "div", class_=re.compile(CSS_SELECTORS["TOTAL_REVIEWS"])
+            )
             if total_el:
-                match = re.search(r"(\d[\d,]*)", total_el.get_text())
+                # Anchor to the "reviews" label so an unrelated leading
+                # number in the header can never be mistaken for the total.
+                match = REVIEW_COUNT_RE.search(total_el.get_text(" ", strip=True))
                 if match:
                     summary["total"] = match.group(1).replace(",", "")
 
         return summary
 
     def analyze_reviews(self) -> dict:
-        cards = self.soup.find_all("div", class_=re.compile(CSS_SELECTORS["REVIEW_CARD"]))
+        cards = self.soup.find_all(
+            "div", class_=re.compile(CSS_SELECTORS["REVIEW_CARD"])
+        )
 
         all_ratings = []
-        reviewer_counts = []
         for card in cards:
             count = self._reviewer_count(card)
             rating = self._star_rating(card)
-            reviewer_counts.append(count)
             if rating is not None:
                 all_ratings.append({"count": count, "rating": rating})
 
@@ -85,6 +91,18 @@ class ReviewAnalyzer:
                             return rating
                     except ValueError:
                         continue
+        # Hotel cards render the rating as "N/5" text instead of star icons.
+        for span in card.find_all(
+            "span", class_=re.compile(CSS_SELECTORS["RATING_TEXT"])
+        ):
+            match = re.fullmatch(r"\s*(\d(?:[,.]\d)?)\s*/\s*5\s*", span.get_text())
+            if match:
+                try:
+                    rating = float(match.group(1).replace(",", "."))
+                    if 1 <= rating <= 5:
+                        return rating
+                except ValueError:
+                    continue
         return None
 
 
