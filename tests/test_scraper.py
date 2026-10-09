@@ -14,6 +14,7 @@ from scraper import (
     PermanentScrapeError,
     TransientScrapeError,
     _wait_for_stable_count,
+    is_throttled_stub,
     validate_place_url,
 )
 
@@ -86,6 +87,24 @@ def test_settle_defaults_come_from_config():
     assert BROWSER_CONFIG["STABLE_POLLS"] == 3
     assert BROWSER_CONFIG["STABLE_INTERVAL_S"] == 0.5
     assert BROWSER_CONFIG["STABLE_TIMEOUT_S"] == 8
+
+
+# --- stub guard: loaded sample vs header total (offline literals) ---
+
+
+def test_stub_guard_flags_shortfall():
+    assert is_throttled_stub(3, 210, 1006)
+    assert is_throttled_stub(200, 210, 1006)
+
+
+def test_stub_guard_accepts_full_sample_or_small_spot():
+    assert not is_throttled_stub(210, 210, 1006)
+    assert not is_throttled_stub(8, 210, 8)
+    assert not is_throttled_stub(0, 210, 0)
+
+
+def test_stub_guard_unknown_total_never_retries_blind():
+    assert not is_throttled_stub(3, 210, None)
 
 
 # --- retry taxonomy ---

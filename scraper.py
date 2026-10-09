@@ -7,6 +7,7 @@ import urllib.parse
 
 from playwright.sync_api import sync_playwright
 
+from analyzer import ReviewAnalyzer
 from constants import (
     BROWSER_CONFIG,
     CSS_SELECTORS,
@@ -36,6 +37,18 @@ def _matches_any(text, keywords):
 def detect_lang(lang_tag):
     """Map an <html lang> value to a LOCALE_STRINGS key ("vi" or "en")."""
     return "vi" if (lang_tag or "").lower().startswith("vi") else "en"
+
+
+def is_throttled_stub(loaded: int, target: int, total: int | None) -> bool:
+    """True when the loaded sample falls short of what the spot offers.
+
+    Strict: any shortfall vs min(target, total) is treated as a throttled
+    stub worth a fresh session. total None (header unparseable) never
+    retries blind — falls back to warn-and-return.
+    """
+    if total is None:
+        return False
+    return loaded < min(target, total)
 
 
 def _wait_for_stable_count(get_count, *, polls=None, interval_s=None, timeout_s=None):
@@ -189,7 +202,18 @@ class MapsScraper:
                         "Google served a 'limited view' of Maps mid-scroll."
                     )
 
-                return page.content()
+                html = page.content()
+                # Stub guard: a 3-card sample from a 1006-review spot is a
+                # throttled stub, not a result — retry with a fresh session
+                # instead of reporting it silently.
+                total_raw = ReviewAnalyzer(html).get_spot_summary()["total"]
+                total = int(total_raw) if total_raw.isdigit() else None
+                if is_throttled_stub(loaded, self.target, total):
+                    raise TransientScrapeError(
+                        f"loaded only {loaded} of {total} total reviews — "
+                        "likely a throttled stub"
+                    )
+                return html
         finally:
             shutil.rmtree(self.profile_path, ignore_errors=True)
             self.profile_path = None
