@@ -3,10 +3,12 @@ import json
 import logging
 import sys
 import time
+from typing import Any, Protocol
 
-from gmaps_review_filter.analyzer import ReviewAnalyzer
+from gmaps_review_filter.analyzer import ReviewAnalyzer, ReviewReport, SpotSummary
 from gmaps_review_filter.config import BROWSER_CONFIG, THRESHOLDS
-from gmaps_review_filter.scraper import MapsScraper, PermanentScrapeError
+from gmaps_review_filter.errors import PermanentScrapeError
+from gmaps_review_filter.scraper import MapsScraper
 
 EXIT_OK = 0
 EXIT_SCRAPE_FAILED = 1
@@ -15,7 +17,15 @@ EXIT_BAD_URL = 2
 logger = logging.getLogger(__name__)
 
 
-def ensure_utf8_stdout():
+class Scraper(Protocol):
+    def fetch_html(self) -> str: ...
+
+
+class ScraperFactory(Protocol):
+    def __call__(self, url: str, target_reviews: int | None = ...) -> Scraper: ...
+
+
+def ensure_utf8_stdout() -> None:
     """Reconfigure stdout to UTF-8 when possible; never raise.
 
     stdout can lack a reconfigure method (captured/piped streams) or
@@ -28,7 +38,7 @@ def ensure_utf8_stdout():
         reconfigure(encoding="utf-8")
 
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Scrape Google Maps reviews; split trusted vs low-activity."
     )
@@ -38,7 +48,7 @@ def build_parser():
     parser.add_argument(
         "--target",
         type=int,
-        default=BROWSER_CONFIG.get("TARGET_REVIEWS", 210),
+        default=BROWSER_CONFIG["TARGET_REVIEWS"],
         help="reviews to load per spot (default: %(default)s)",
     )
     parser.add_argument(
@@ -59,7 +69,9 @@ def build_parser():
     return parser
 
 
-def report_to_dict(summary, report, limit):
+def report_to_dict(
+    summary: SpotSummary, report: ReviewReport, limit: int
+) -> dict[str, Any]:
     total_classified = report["filtered_count"] + report["trusted_count"]
     return {
         "name": summary["name"],
@@ -78,7 +90,7 @@ def report_to_dict(summary, report, limit):
     }
 
 
-def format_human(summary, report, limit):
+def format_human(summary: SpotSummary, report: ReviewReport, limit: int) -> str:
     green = "\033[32m"
     red = "\033[31m"
     reset = "\033[0m"
@@ -114,7 +126,14 @@ def format_human(summary, report, limit):
     return "\n".join(parts)
 
 
-def run_once(url, *, target, trust_threshold, as_json, scraper_factory=MapsScraper):
+def run_once(
+    url: str,
+    *,
+    target: int,
+    trust_threshold: int,
+    as_json: bool,
+    scraper_factory: ScraperFactory = MapsScraper,
+) -> int:
     """Scrape and report one URL. Returns a process exit code.
 
     Diagnostics go to stderr; only the final report goes to stdout so
@@ -135,7 +154,14 @@ def run_once(url, *, target, trust_threshold, as_json, scraper_factory=MapsScrap
         print(f"Completed in {time.monotonic() - started:.1f}s.", file=sys.stderr)
 
 
-def _scrape_and_report(url, *, target, trust_threshold, as_json, scraper_factory):
+def _scrape_and_report(
+    url: str,
+    *,
+    target: int,
+    trust_threshold: int,
+    as_json: bool,
+    scraper_factory: ScraperFactory,
+) -> int:
     print("Validating URL...", file=sys.stderr)
     try:
         print(f"Initializing scraper for: {url}", file=sys.stderr)
@@ -151,7 +177,7 @@ def _scrape_and_report(url, *, target, trust_threshold, as_json, scraper_factory
     summary = analyzer.get_spot_summary()
     report = analyzer.analyze_reviews()
 
-    if not report:
+    if report is None:
         print("Warning: No review cards found.", file=sys.stderr)
         return EXIT_SCRAPE_FAILED
 
@@ -162,7 +188,7 @@ def _scrape_and_report(url, *, target, trust_threshold, as_json, scraper_factory
     return EXIT_OK
 
 
-def main(argv=None):
+def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     ensure_utf8_stdout()
     logging.basicConfig(

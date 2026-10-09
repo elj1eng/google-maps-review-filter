@@ -14,6 +14,6 @@ jobs:
       - run: uv run ruff check .
       - run: uv run ruff format --check .
       - run: uv run gmaps-filter --help
-      - run: uv run mypy --strict src/gmaps_review_filter/analyzer.py src/gmaps_review_filter/config.py
+      - run: uv run mypy --strict src/gmaps_review_filter/analyzer.py src/gmaps_review_filter/config.py src/gmaps_review_filter/errors.py src/gmaps_review_filter/cli.py
       - run: uv run coverage run -m pytest -q
       - run: uv run coverage report

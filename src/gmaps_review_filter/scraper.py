@@ -58,17 +58,11 @@ def _wait_for_stable_count(get_count, *, polls=None, interval_s=None, timeout_s=
     as soon as the count settles, or the last observed value at timeout.
     get_count is injected so the policy stays testable without a browser.
     """
-    needed = polls if polls is not None else BROWSER_CONFIG.get("STABLE_POLLS", 3)
+    needed = polls if polls is not None else BROWSER_CONFIG["STABLE_POLLS"]
     interval = (
-        interval_s
-        if interval_s is not None
-        else BROWSER_CONFIG.get("STABLE_INTERVAL_S", 0.5)
+        interval_s if interval_s is not None else BROWSER_CONFIG["STABLE_INTERVAL_S"]
     )
-    timeout = (
-        timeout_s
-        if timeout_s is not None
-        else BROWSER_CONFIG.get("STABLE_TIMEOUT_S", 8)
-    )
+    timeout = timeout_s if timeout_s is not None else BROWSER_CONFIG["STABLE_TIMEOUT_S"]
     deadline = time.monotonic() + timeout
     last, run = None, 0
     while True:
@@ -160,7 +154,7 @@ class MapsScraper:
     def __init__(self, url, target_reviews=None):
         # Fail fast on non-place URLs: no browser is launched for them.
         self.url = validate_place_url(url)
-        self.target = target_reviews or BROWSER_CONFIG.get("TARGET_REVIEWS", 210)
+        self.target = target_reviews or BROWSER_CONFIG["TARGET_REVIEWS"]
 
     def fetch_html(self):
         """Scrape the reviews page.
@@ -170,7 +164,7 @@ class MapsScraper:
         backoff. Permanent failures (bad URL, no Google source) raise
         immediately without burning retries.
         """
-        attempts = BROWSER_CONFIG.get("FETCH_ATTEMPTS", 3)
+        attempts = BROWSER_CONFIG["FETCH_ATTEMPTS"]
         last_error = None
         for attempt in range(1, attempts + 1):
             try:
@@ -482,10 +476,10 @@ class MapsScraper:
     def _scroll_reviews(self, page):
         logger.info("Scrolling review list dynamically...")
         card_sel = f".{CSS_SELECTORS['REVIEW_CARD']}"
-        stall_limit = BROWSER_CONFIG.get("SCROLL_STALL_LIMIT", 5)
-        sleep_s = BROWSER_CONFIG.get("SCROLL_SLEEP_S", 1.5)
-        wait_ms = BROWSER_CONFIG.get("DYNAMIC_WAIT_MS", 4000)
-        wheel_px = BROWSER_CONFIG.get("SCROLL_WHEEL_PX", 2000)
+        stall_limit = BROWSER_CONFIG["SCROLL_STALL_LIMIT"]
+        sleep_s = BROWSER_CONFIG["SCROLL_SLEEP_S"]
+        wait_ms = BROWSER_CONFIG["DYNAMIC_WAIT_MS"]
+        wheel_px = BROWSER_CONFIG["SCROLL_WHEEL_PX"]
         target = self.target
 
         pane = self._find_scrollable_pane(page)
@@ -572,7 +566,7 @@ class MapsScraper:
         except Exception:
             final = 0
         logger.info("Finished scrolling: %d review cards in DOM.", final)
-        min_expected = BROWSER_CONFIG.get("MIN_EXPECTED_REVIEWS", 10)
+        min_expected = BROWSER_CONFIG["MIN_EXPECTED_REVIEWS"]
         if 0 < final < min_expected:
             logger.warning(
                 "Only %d reviews loaded (expected more). Page may have loaded "

@@ -1,4 +1,5 @@
 import re
+from typing import TypedDict
 
 from bs4 import BeautifulSoup, Tag
 
@@ -6,6 +7,25 @@ from gmaps_review_filter.config import THRESHOLDS
 from gmaps_review_filter.selectors import CSS_SELECTORS
 
 REVIEW_COUNT_RE = re.compile(r"(\d[\d,]*)\s*(?:reviews?|đánh giá)", re.IGNORECASE)
+
+
+class SpotSummary(TypedDict):
+    """Spot header facts; "N/A"/"Unknown Place" when unparseable."""
+
+    rating: str
+    total: str
+    name: str
+
+
+class ReviewReport(TypedDict):
+    """Trusted/filtered split over one loaded sample."""
+
+    total_scanned: int
+    filtered_count: int
+    trusted_count: int
+    trusted_avg: float
+    all_avg: float
+    no_rating_count: int
 
 
 class ReviewAnalyzer:
@@ -17,8 +37,12 @@ class ReviewAnalyzer:
             else THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]
         )
 
-    def get_spot_summary(self) -> dict[str, str]:
-        summary = {"rating": "N/A", "total": "N/A", "name": "Unknown Place"}
+    def get_spot_summary(self) -> SpotSummary:
+        summary: SpotSummary = {
+            "rating": "N/A",
+            "total": "N/A",
+            "name": "Unknown Place",
+        }
 
         button = self.soup.find("button", attrs={"data-bundle-id": True})
         if button:
@@ -45,7 +69,7 @@ class ReviewAnalyzer:
 
         return summary
 
-    def analyze_reviews(self) -> dict[str, int | float]:
+    def analyze_reviews(self) -> ReviewReport | None:
         cards = self.soup.find_all(
             "div", class_=re.compile(CSS_SELECTORS["REVIEW_CARD"])
         )
@@ -59,7 +83,7 @@ class ReviewAnalyzer:
 
         total = len(cards)
         if total == 0:
-            return {}
+            return None
 
         trusted = [r for r in all_ratings if r["count"] > self.limit]
         filtered_out = [r for r in all_ratings if r["count"] <= self.limit]

@@ -94,8 +94,8 @@ def test_restaurant_star_icons():
     assert rep["trusted_avg"] == 5.0
 
 
-def test_empty_html_returns_empty_report():
-    assert ReviewAnalyzer("<html><body></body></html>").analyze_reviews() == {}
+def test_empty_html_returns_none_report():
+    assert ReviewAnalyzer("<html><body></body></html>").analyze_reviews() is None
 
 
 # --- rating parsing ---

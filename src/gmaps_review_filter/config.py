@@ -1,8 +1,13 @@
 """Tuning knobs: trust threshold, UI-matching locales, browser behavior."""
 
-from typing import Any
+from typing import TypedDict
 
-THRESHOLDS: dict[str, int] = {
+
+class Thresholds(TypedDict):
+    MIN_REVIEWS_FOR_TRUST: int
+
+
+THRESHOLDS: Thresholds = {
     "MIN_REVIEWS_FOR_TRUST": 10,
 }
 
@@ -27,7 +32,25 @@ LOCALE_STRINGS: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
-BROWSER_CONFIG: dict[str, Any] = {
+
+class BrowserConfig(TypedDict):
+    VIEWPORT: dict[str, int]
+    TIMEOUT: int
+    SCROLL_LIMIT: int
+    TARGET_REVIEWS: int
+    DYNAMIC_WAIT_MS: int
+    SCROLL_STALL_LIMIT: int
+    SCROLL_SLEEP_S: float
+    SCROLL_WHEEL_PX: int
+    STABLE_POLLS: int
+    STABLE_INTERVAL_S: float
+    STABLE_TIMEOUT_S: int
+    MIN_EXPECTED_REVIEWS: int
+    FETCH_ATTEMPTS: int
+    USER_AGENT: str
+
+
+BROWSER_CONFIG: BrowserConfig = {
     "VIEWPORT": {"width": 1280, "height": 900},
     "TIMEOUT": 15000,
     "SCROLL_LIMIT": 40,
