@@ -4,22 +4,19 @@ Re-scrapes the fixture spots, re-trims to header + representative cards,
 and prints the new frozen shapes so test assertions can be updated.
 Network-dependent; run sparingly (rate limits apply).
 
-Usage: uv run python tests/refresh_fixtures.py
+Usage: uv run python -m gmaps_review_filter.refresh_fixtures
 """
 
-import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from bs4 import BeautifulSoup
 
-from bs4 import BeautifulSoup  # noqa: E402
+from gmaps_review_filter.analyzer import ReviewAnalyzer
+from gmaps_review_filter.scraper import MapsScraper
+from gmaps_review_filter.selectors import CSS_SELECTORS
 
-from analyzer import ReviewAnalyzer  # noqa: E402
-from constants import CSS_SELECTORS  # noqa: E402
-from scraper import MapsScraper  # noqa: E402
-
-OUT = Path(__file__).parent / "fixtures"
+OUT = Path(__file__).resolve().parent.parent.parent / "tests" / "fixtures"
 
 MBS_URL = (
     "https://www.google.com/maps/place/Marina+Bay+Sands+Singapore/"

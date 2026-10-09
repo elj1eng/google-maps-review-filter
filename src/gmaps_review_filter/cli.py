@@ -4,9 +4,9 @@ import logging
 import sys
 import time
 
-from analyzer import ReviewAnalyzer
-from constants import BROWSER_CONFIG, THRESHOLDS
-from scraper import MapsScraper, PermanentScrapeError
+from gmaps_review_filter.analyzer import ReviewAnalyzer
+from gmaps_review_filter.config import BROWSER_CONFIG, THRESHOLDS
+from gmaps_review_filter.scraper import MapsScraper, PermanentScrapeError
 
 EXIT_OK = 0
 EXIT_SCRAPE_FAILED = 1

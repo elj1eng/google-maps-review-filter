@@ -7,11 +7,11 @@ import urllib.parse
 
 from playwright.sync_api import sync_playwright
 
-from analyzer import ReviewAnalyzer
-from constants import (
-    BROWSER_CONFIG,
+from gmaps_review_filter.analyzer import ReviewAnalyzer
+from gmaps_review_filter.config import BROWSER_CONFIG, LOCALE_STRINGS
+from gmaps_review_filter.errors import PermanentScrapeError, TransientScrapeError
+from gmaps_review_filter.selectors import (
     CSS_SELECTORS,
-    LOCALE_STRINGS,
     SCROLLABLE_PANE_CANDIDATES,
     SELECTOR_META,
 )
@@ -108,14 +108,6 @@ def validate_place_url(url: str) -> str:
             "Search-list URLs have no reviews list — open the place first."
         )
     raise PermanentScrapeError("URL is not a Google Maps link.")
-
-
-class TransientScrapeError(Exception):
-    """Temporary failure (limited view, render flakes); retry fresh."""
-
-
-class PermanentScrapeError(Exception):
-    """Deterministic failure (bad URL, no Google source); do not retry."""
 
 
 class MapsScraper:

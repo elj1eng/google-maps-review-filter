@@ -2,7 +2,8 @@ import re
 
 from bs4 import BeautifulSoup, Tag
 
-from constants import CSS_SELECTORS, THRESHOLDS
+from gmaps_review_filter.config import THRESHOLDS
+from gmaps_review_filter.selectors import CSS_SELECTORS
 
 REVIEW_COUNT_RE = re.compile(r"(\d[\d,]*)\s*(?:reviews?|đánh giá)", re.IGNORECASE)
 

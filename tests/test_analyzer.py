@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from analyzer import ReviewAnalyzer
+from gmaps_review_filter.analyzer import ReviewAnalyzer
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

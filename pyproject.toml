@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "gmaps-review-filter"
 version = "0.1.0"
@@ -7,6 +11,12 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "playwright>=1.59.0",
 ]
+
+[project.scripts]
+gmaps-filter = "gmaps_review_filter.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gmaps_review_filter"]
 
 [dependency-groups]
 dev = [
@@ -28,3 +38,15 @@ ignore = ["BLE001", "S110", "S112"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.coverage.run]
+source = ["gmaps_review_filter"]
+relative_files = true
+
+[tool.coverage.report]
+include = ["*/gmaps_review_filter/analyzer.py", "*/gmaps_review_filter/config.py"]
+fail_under = 100

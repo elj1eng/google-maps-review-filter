@@ -8,8 +8,8 @@ import time
 
 import pytest
 
-from constants import BROWSER_CONFIG, CSS_SELECTORS, SELECTOR_META
-from scraper import (
+from gmaps_review_filter.config import BROWSER_CONFIG
+from gmaps_review_filter.scraper import (
     MapsScraper,
     PermanentScrapeError,
     TransientScrapeError,
@@ -17,6 +17,7 @@ from scraper import (
     is_throttled_stub,
     validate_place_url,
 )
+from gmaps_review_filter.selectors import CSS_SELECTORS, SELECTOR_META
 
 PLACE = "https://www.google.com/maps/place/Peter+Luger+Steak+House/@40.7,-73.9,17z"
 
@@ -196,7 +197,7 @@ def test_refresh_fixtures_import_has_no_side_effects(monkeypatch):
         raise AssertionError("must not scrape on import")
 
     monkeypatch.setattr(MapsScraper, "fetch_html", no_network)
-    importlib.import_module("tests.refresh_fixtures")
+    importlib.import_module("gmaps_review_filter.refresh_fixtures")
 
 
 def test_every_string_selector_has_registry_entry():

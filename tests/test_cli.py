@@ -4,9 +4,19 @@ import json
 import re
 import sys
 
-import main
-from main import build_parser, format_human, report_to_dict, run_once
-from scraper import MapsScraper, PermanentScrapeError, _matches_any, detect_lang
+import gmaps_review_filter.cli as main
+from gmaps_review_filter.cli import (
+    build_parser,
+    format_human,
+    report_to_dict,
+    run_once,
+)
+from gmaps_review_filter.scraper import (
+    MapsScraper,
+    PermanentScrapeError,
+    _matches_any,
+    detect_lang,
+)
 from tests.test_analyzer import FIXTURES
 
 SUMMARY = {"name": "Test Spot", "rating": "4.5", "total": "1250"}

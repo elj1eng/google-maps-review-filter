@@ -4,7 +4,7 @@ CLI tool that scrapes Google Maps reviews for a place URL, then filters out low-
 
 ## How it works
 
-1. `main.py` validates the URL (reachable + a `/maps/place/` page — search-list URLs are rejected before any browser launches), runs `MapsScraper.fetch_html()`, then `ReviewAnalyzer`.
+1. `cli.py` validates the URL (a `/maps/place/` page or Maps short link — search-list URLs are rejected before any browser launches), runs `MapsScraper.fetch_html()`, then `ReviewAnalyzer`, and reports wall-clock time on stderr.
 2. `scraper.py` uses Playwright (headless Chromium) to open the place page, click the Reviews tab, filter hotel tabs to Google-only reviews, auto-scroll to load review cards, and return page HTML. Transient failures (anti-bot limited view, render flakes) retry with backoff; deterministic failures raise immediately.
 3. `analyzer.py` parses with BeautifulSoup:
    - Spot summary: name, rating, total reviews
@@ -73,10 +73,10 @@ playwright install chromium
 ## Usage
 
 ```bash
-uv run main.py "https://www.google.com/maps/place/..."
+uv run gmaps-filter "https://www.google.com/maps/place/..."
 # or interactive:
-uv run main.py
-# (pip/venv equivalent: python main.py ...)
+uv run gmaps-filter
+# (pip/venv equivalent: gmaps-filter ... after pip install -e .)
 ```
 
 Options:
@@ -110,26 +110,29 @@ Average rating (trusted only): 4.44 / 5
 
 ## Project Structure
 
-- `main.py`: argparse CLI (`--target`, `--trust-threshold`, `--json`, `--verbose`), exit codes 0/1/2, human/JSON report rendering.
-- `scraper.py`: Playwright navigation, Reviews tab handling, hotel Google-only filter, dynamic scroll; transient vs permanent error taxonomy.
-- `analyzer.py`: BeautifulSoup parsing, spot summary, trusted/filtered split (fully typed, 100% covered).
-- `constants.py`: CSS selectors + `SELECTOR_META` volatility registry, thresholds, browser tuning, `LOCALE_STRINGS` (en/vi UI matching).
+- `src/gmaps_review_filter/cli.py`: argparse CLI (`--target`, `--trust-threshold`, `--json`, `--verbose`), exit codes 0/1/2, human/JSON report rendering (`gmaps-filter` entry point).
+- `src/gmaps_review_filter/scraper.py`: Playwright navigation, Reviews tab handling, hotel Google-only filter, dynamic scroll.
+- `src/gmaps_review_filter/errors.py`: transient vs permanent error taxonomy.
+- `src/gmaps_review_filter/analyzer.py`: BeautifulSoup parsing, spot summary, trusted/filtered split (fully typed, 100% covered).
+- `src/gmaps_review_filter/selectors.py`: CSS selectors + `SELECTOR_META` volatility registry.
+- `src/gmaps_review_filter/config.py`: thresholds, browser tuning, `LOCALE_STRINGS` (en/vi UI matching).
 - `pyproject.toml` / `uv.lock`: dependencies (`requirements.txt` generated from these).
-- `tests/`: pytest suite — analyzer golden fixtures plus offline scraper-policy and CLI tests. Only `tests/refresh_fixtures.py` needs the network.
+- `tests/`: pytest suite — analyzer golden fixtures plus offline scraper-policy and CLI tests. Only the refresh tool needs the network.
 
 ## Testing
 
 ```bash
-uv run pytest tests/   # offline, ~1s
+uv run pytest               # offline, ~1s (paths configured in pyproject.toml)
 uv run ruff check . && uv run ruff format --check .
-uv run mypy --strict analyzer.py constants.py
-uv run coverage run -m pytest tests/ -q
-uv run coverage report --include="analyzer.py,constants.py" --fail-under=100
+uv run mypy --strict src/gmaps_review_filter/analyzer.py src/gmaps_review_filter/config.py
+uv run coverage run -m pytest -q
+uv run coverage report      # include + fail-under=100 configured in pyproject.toml
 ```
 
 All of the above runs in CI on push/PR. Fixtures are trimmed excerpts of
 real pages (`tests/fixtures/`, provenance in file headers); refresh them
-with `uv run python tests/refresh_fixtures.py` (live Google load — sparing),
+with `uv run python -m gmaps_review_filter.refresh_fixtures` (live Google
+load — sparing),
 then update the frozen assertions to match. `hotel_mixed.html` is archival
 and intentionally not refreshed (live scrapes are Google-only by design).
 
