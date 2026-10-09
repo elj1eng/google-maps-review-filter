@@ -110,25 +110,82 @@ def validate_place_url(url: str) -> str:
     raise PermanentScrapeError("URL is not a Google Maps link.")
 
 
+class ScrapeSession:
+    """One throwaway browser session: profile dir, driver, and page.
+
+    Context manager so teardown (driver stop + profile removal) always
+    runs: attempts never leak state through scraper attributes, and
+    concurrent runs never share a profile.
+    """
+
+    def __init__(self):
+        self.profile_path = tempfile.mkdtemp(prefix="gmaps_")
+        self._playwright = None
+
+    def __enter__(self):
+        self._playwright = sync_playwright().start()
+        context = self._playwright.chromium.launch_persistent_context(
+            self.profile_path,
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"],
+            user_agent=BROWSER_CONFIG["USER_AGENT"],
+            viewport=BROWSER_CONFIG["VIEWPORT"],
+        )
+        page = context.pages[0]
+        page.add_init_script(WEBDRIVER_MASK_JS)
+        return page
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if self._playwright is not None:
+                self._playwright.stop()
+        finally:
+            shutil.rmtree(self.profile_path, ignore_errors=True)
+        return False
+
+
+def _card_counter(page, card_sel):
+    """Zero-arg card count for settle-waits; unreadable DOM reads as None."""
+
+    def count():
+        try:
+            return page.locator(card_sel).count()
+        except Exception:
+            return None
+
+    return count
+
+
 class MapsScraper:
     def __init__(self, url, target_reviews=None):
         # Fail fast on non-place URLs: no browser is launched for them.
         self.url = validate_place_url(url)
         self.target = target_reviews or BROWSER_CONFIG.get("TARGET_REVIEWS", 210)
-        self.profile_path = None
 
     def fetch_html(self):
         """Scrape the reviews page.
 
-        Transient failures (limited view, render flakes) are retried with a
-        fresh session and backoff. Permanent failures (bad URL, no Google
-        source) raise immediately without burning retries.
+        Returns the reviews HTML. Transient failures (limited view, render
+        flakes, throttled stubs) are retried with a fresh session and
+        backoff. Permanent failures (bad URL, no Google source) raise
+        immediately without burning retries.
         """
         attempts = BROWSER_CONFIG.get("FETCH_ATTEMPTS", 3)
         last_error = None
         for attempt in range(1, attempts + 1):
             try:
-                return self._fetch_once()
+                html, loaded = self._fetch_once()
+                # Stub guard: a 3-card sample from a 1006-review spot is a
+                # throttled stub, not a result — retry with a fresh session
+                # instead of reporting it silently.
+                total_raw = ReviewAnalyzer(html).get_spot_summary()["total"]
+                total = int(total_raw) if total_raw.isdigit() else None
+                if is_throttled_stub(loaded, self.target, total):
+                    raise TransientScrapeError(
+                        f"loaded only {loaded} of {total} total reviews — "
+                        "likely a throttled stub"
+                    )
+                return html
             except TransientScrapeError as exc:
                 last_error = exc
                 logger.warning(
@@ -141,85 +198,60 @@ class MapsScraper:
                 # limited-view bursts instead of hammering Google.
                 time.sleep(min(3 * 2 ** (attempt - 1), 30))
         raise RuntimeError(
-            f"Google kept serving a limited review list after {attempts} "
-            f"attempts ({last_error}). Try again later."
+            f"Scrape failed after {attempts} attempts ({last_error}). Try again later."
         )
 
     def _fetch_once(self):
-        # Fresh throwaway profile per attempt: concurrent runs never share
-        # state, and nothing depends on the working directory.
-        self.profile_path = tempfile.mkdtemp(prefix="gmaps_")
+        with ScrapeSession() as page:
+            page.goto(self.url, wait_until="domcontentloaded")
+            self._wait_for_title(page)
 
-        try:
-            with sync_playwright() as p:
-                context = p.chromium.launch_persistent_context(
-                    self.profile_path,
-                    headless=True,
-                    args=["--disable-blink-features=AutomationControlled"],
-                    user_agent=BROWSER_CONFIG["USER_AGENT"],
-                    viewport=BROWSER_CONFIG["VIEWPORT"],
+            # Reload shakes off partial renders; re-wait the title
+            # instead of a fixed sleep so a surviving title returns in
+            # milliseconds while a real re-render still waits it out.
+            page.reload(wait_until="domcontentloaded")
+            self._wait_for_title(page)
+
+            # Fail fast: the anti-bot banner is already on the DOM when
+            # the limited view is active, so don't bother opening tabs.
+            if self._is_limited_view(page):
+                raise TransientScrapeError(LIMITED_VIEW_MSG)
+
+            opened = self._open_reviews_tab(page)
+            if opened and self._is_limited_view(page):
+                raise TransientScrapeError(LIMITED_VIEW_MSG)
+
+            loaded = self._scroll_reviews(page) if opened else 0
+
+            if not opened or loaded == 0:
+                # Search-list page or a place without a rendered reviews
+                # list — never return empty HTML silently.
+                raise TransientScrapeError(
+                    "the page had no reviews list (wrong page or load failure)"
                 )
-                page = context.pages[0]
-                page.add_init_script(WEBDRIVER_MASK_JS)
 
-                page.goto(self.url, wait_until="domcontentloaded")
-                self._wait_for_title(page)
+            if self._is_limited_view(page):
+                raise TransientScrapeError(
+                    "Google served a 'limited view' of Maps mid-scroll."
+                )
 
-                # Reload shakes off partial renders; re-wait the title
-                # instead of a fixed sleep so a surviving title returns in
-                # milliseconds while a real re-render still waits it out.
-                page.reload(wait_until="domcontentloaded")
-                self._wait_for_title(page)
-
-                # Fail fast: the anti-bot banner is already on the DOM when
-                # the limited view is active, so don't bother opening tabs.
-                if self._is_limited_view(page):
-                    raise TransientScrapeError(LIMITED_VIEW_MSG)
-
-                opened = self._open_reviews_tab(page)
-                if opened and self._is_limited_view(page):
-                    raise TransientScrapeError(LIMITED_VIEW_MSG)
-
-                loaded = self._scroll_reviews(page) if opened else 0
-
-                if not opened or loaded == 0:
-                    # Search-list page or a place without a rendered reviews
-                    # list — never return empty HTML silently.
-                    raise TransientScrapeError(
-                        "the page had no reviews list (wrong page or load failure)"
-                    )
-
-                if self._is_limited_view(page):
-                    raise TransientScrapeError(
-                        "Google served a 'limited view' of Maps mid-scroll."
-                    )
-
-                html = page.content()
-                # Stub guard: a 3-card sample from a 1006-review spot is a
-                # throttled stub, not a result — retry with a fresh session
-                # instead of reporting it silently.
-                total_raw = ReviewAnalyzer(html).get_spot_summary()["total"]
-                total = int(total_raw) if total_raw.isdigit() else None
-                if is_throttled_stub(loaded, self.target, total):
-                    raise TransientScrapeError(
-                        f"loaded only {loaded} of {total} total reviews — "
-                        "likely a throttled stub"
-                    )
-                return html
-        finally:
-            shutil.rmtree(self.profile_path, ignore_errors=True)
-            self.profile_path = None
+            return page.content(), loaded
 
     @staticmethod
     def _wait_for_title(page):
-        """Wait for the place title; fail loudly when it never renders."""
+        """Wait for the place title; fail loudly when it never renders.
+
+        Raises PermanentScrapeError: a page with no title after load +
+        reload is a deterministic URL problem (linguistic/unresolvable
+        URL), not a scrape flake — exit 2, never retried.
+        """
         try:
             page.wait_for_selector(
                 CSS_SELECTORS["BUSINESS_TITLE"],
                 timeout=BROWSER_CONFIG["TIMEOUT"],
             )
         except Exception as exc:
-            raise RuntimeError(
+            raise PermanentScrapeError(
                 "Google Maps never showed a place title — the URL is "
                 "likely invalid or the page failed to load."
             ) from exc
@@ -273,13 +305,7 @@ class MapsScraper:
             logger.warning("No review cards appeared after opening reviews tab.")
             return False
 
-        def card_count():
-            try:
-                return page.locator(card_sel).count()
-            except Exception:
-                return None
-
-        settled = _wait_for_stable_count(card_count)
+        settled = _wait_for_stable_count(_card_counter(page, card_sel))
         logger.debug("Review list settled at %s cards.", settled)
         return True
 
@@ -392,13 +418,7 @@ class MapsScraper:
 
         # Settle: the list may update in place after the switch; proceed
         # as soon as the count stops changing instead of a fixed sleep.
-        def card_count():
-            try:
-                return page.locator(card_sel).count()
-            except Exception:
-                return None
-
-        settled = _wait_for_stable_count(card_count)
+        settled = _wait_for_stable_count(_card_counter(page, card_sel))
         logger.info("Review filter switched to 'Google' (%s cards).", settled)
 
     def _find_scrollable_pane(self, page):

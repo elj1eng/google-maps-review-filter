@@ -5,6 +5,7 @@ stubbing _fetch_once, and _locate is exercised with a fake page.
 """
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -108,6 +109,24 @@ def test_stub_guard_unknown_total_never_retries_blind():
     assert not is_throttled_stub(3, 210, None)
 
 
+# --- title gate: unresolvable URLs fail fast as permanent ---
+
+
+class _NoTitlePage:
+    def wait_for_selector(self, *args, **kwargs):
+        raise TimeoutError("timeout")
+
+
+def test_wait_for_title_raises_permanent_not_runtime():
+    """Linguistic/unresolvable URLs exit 2 (bad URL), not 1.
+
+    Bare /maps/place/Name URLs resolve to nothing: no h1 ever renders.
+    That is a deterministic URL problem, not a scrape flake.
+    """
+    with pytest.raises(PermanentScrapeError, match="never showed a place title"):
+        MapsScraper._wait_for_title(_NoTitlePage())
+
+
 # --- retry taxonomy ---
 
 
@@ -129,10 +148,23 @@ def _run_fetch(monkeypatch, effects):
 def test_retry_transient_then_succeeds(monkeypatch):
     calls = _run_fetch(
         monkeypatch,
-        [TransientScrapeError("a"), TransientScrapeError("b"), "<html>"],
+        [TransientScrapeError("a"), TransientScrapeError("b"), ("<html>", 5)],
     )
     assert MapsScraper(PLACE).fetch_html() == "<html>"
     assert len(calls) == 3
+
+
+def _fixture_html(name):
+    return (Path(__file__).parent / "fixtures" / name).read_text(encoding="utf-8")
+
+
+def test_stub_sample_retried_then_succeeds(monkeypatch):
+    """A 3-card sample from a 16244-total spot retries at the loop level,
+    where the scraper no longer needs the analyzer import."""
+    html = _fixture_html("restaurant.html")
+    calls = _run_fetch(monkeypatch, [(html, 3), (html, 60)])
+    assert MapsScraper(PLACE, target_reviews=50).fetch_html() == html
+    assert len(calls) == 2
 
 
 def test_permanent_never_retried(monkeypatch):
@@ -140,6 +172,20 @@ def test_permanent_never_retried(monkeypatch):
     with pytest.raises(PermanentScrapeError):
         MapsScraper(PLACE).fetch_html()
     assert len(calls) == 1
+
+
+def test_transient_exhaustion_message_names_actual_failure(monkeypatch):
+    """The exhaustion message must quote the real last error, not always
+    claim a limited view (e.g. 'no reviews list' exhaustion said
+    'limited review list')."""
+    _run_fetch(
+        monkeypatch,
+        [TransientScrapeError("no reviews list")] * BROWSER_CONFIG["FETCH_ATTEMPTS"],
+    )
+    with pytest.raises(RuntimeError) as excinfo:
+        MapsScraper(PLACE).fetch_html()
+    assert "no reviews list" in str(excinfo.value)
+    assert "limited review list" not in str(excinfo.value)
 
 
 def test_transient_exhaustion_raises_runtime_error(monkeypatch):
