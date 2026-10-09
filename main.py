@@ -2,6 +2,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 
 from analyzer import ReviewAnalyzer
 from constants import BROWSER_CONFIG, THRESHOLDS
@@ -119,7 +120,22 @@ def run_once(url, *, target, trust_threshold, as_json, scraper_factory=MapsScrap
     Diagnostics go to stderr; only the final report goes to stdout so
     --json output stays pipeable. scraper_factory is injectable for
     tests (must accept (url, target_reviews=...) like MapsScraper).
+    Wall-clock processing time is reported on stderr on every path.
     """
+    started = time.monotonic()
+    try:
+        return _scrape_and_report(
+            url,
+            target=target,
+            trust_threshold=trust_threshold,
+            as_json=as_json,
+            scraper_factory=scraper_factory,
+        )
+    finally:
+        print(f"Completed in {time.monotonic() - started:.1f}s.", file=sys.stderr)
+
+
+def _scrape_and_report(url, *, target, trust_threshold, as_json, scraper_factory):
     print("Validating URL...", file=sys.stderr)
     try:
         print(f"Initializing scraper for: {url}", file=sys.stderr)

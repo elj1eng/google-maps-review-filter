@@ -1,6 +1,7 @@
 """Tests for CLI helpers and locale matching (offline)."""
 
 import json
+import re
 import sys
 
 import main
@@ -136,6 +137,15 @@ def test_no_head_request_gate():
     place URLs, so the check wrongly rejected them with EXIT_BAD_URL.
     """
     assert not hasattr(main, "is_google_maps_responsive")
+
+
+def test_run_once_reports_elapsed_time_on_stderr(capsys):
+    """Wall-clock processing time goes to stderr, never stdout."""
+    code = _run(factory=_fixture_factory("restaurant.html"))
+    assert code == 0
+    out, err = capsys.readouterr()
+    assert re.search(r"Completed in \d+\.\d+s\.", err)
+    assert "Completed in" not in out
 
 
 def test_run_once_uses_injected_factory_not_maps_scraper(monkeypatch, capsys):
