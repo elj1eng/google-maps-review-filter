@@ -13,6 +13,7 @@ from scraper import (
     MapsScraper,
     PermanentScrapeError,
     TransientScrapeError,
+    _wait_for_stable_count,
     validate_place_url,
 )
 
@@ -41,6 +42,50 @@ def test_gate_rejects_non_maps_urls():
         validate_place_url("not a url")
     with pytest.raises(PermanentScrapeError):
         validate_place_url("")
+
+
+# --- settle-wait policy (offline: scripted counters, no browser) ---
+
+
+def test_settle_returns_when_count_stabilizes():
+    counts = iter([0, 0, 3, 3, 3])
+    started = time.monotonic()
+    result = _wait_for_stable_count(
+        lambda: next(counts), polls=3, interval_s=0, timeout_s=5
+    )
+    assert result == 3
+    assert time.monotonic() - started < 5  # returned early, not at the cap
+
+
+def test_settle_flat_from_start_polls_exactly_n_times():
+    calls = []
+
+    def flat():
+        calls.append(1)
+        return 5
+
+    assert _wait_for_stable_count(flat, polls=3, interval_s=0, timeout_s=5) == 5
+    assert len(calls) == 3
+
+
+def test_settle_caps_on_ever_growing_counts():
+    state = {"n": 0}
+
+    def growing():
+        state["n"] += 1
+        return state["n"]
+
+    started = time.monotonic()
+    result = _wait_for_stable_count(growing, polls=3, interval_s=0.01, timeout_s=0.2)
+    assert result > 3  # never stabilized: kept polling, not an early return
+    assert result == state["n"]  # last observed value, no raise
+    assert time.monotonic() - started >= 0.15  # actually waited for the cap
+
+
+def test_settle_defaults_come_from_config():
+    assert BROWSER_CONFIG["STABLE_POLLS"] == 3
+    assert BROWSER_CONFIG["STABLE_INTERVAL_S"] == 0.5
+    assert BROWSER_CONFIG["STABLE_TIMEOUT_S"] == 8
 
 
 # --- retry taxonomy ---

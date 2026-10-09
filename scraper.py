@@ -38,6 +38,42 @@ def detect_lang(lang_tag):
     return "vi" if (lang_tag or "").lower().startswith("vi") else "en"
 
 
+def _wait_for_stable_count(get_count, *, polls=None, interval_s=None, timeout_s=None):
+    """Poll get_count() until it repeats the same value `polls` times in a row.
+
+    Event-driven alternative to fixed sleeps after a list renders: returns
+    as soon as the count settles, or the last observed value at timeout.
+    get_count is injected so the policy stays testable without a browser.
+    """
+    needed = polls if polls is not None else BROWSER_CONFIG.get("STABLE_POLLS", 3)
+    interval = (
+        interval_s
+        if interval_s is not None
+        else BROWSER_CONFIG.get("STABLE_INTERVAL_S", 0.5)
+    )
+    timeout = (
+        timeout_s
+        if timeout_s is not None
+        else BROWSER_CONFIG.get("STABLE_TIMEOUT_S", 8)
+    )
+    deadline = time.monotonic() + timeout
+    last, run = None, 0
+    while True:
+        try:
+            value = get_count()
+        except Exception:
+            value = None
+        if value == last:
+            run += 1
+        else:
+            last, run = value, 1
+        if run >= needed:
+            return last
+        if time.monotonic() >= deadline:
+            return last
+        time.sleep(interval)
+
+
 def validate_place_url(url: str) -> str:
     """Reject non-place URLs before launching a browser.
 
@@ -122,19 +158,13 @@ class MapsScraper:
                 page.add_init_script(WEBDRIVER_MASK_JS)
 
                 page.goto(self.url, wait_until="domcontentloaded")
-                try:
-                    page.wait_for_selector(
-                        CSS_SELECTORS["BUSINESS_TITLE"],
-                        timeout=BROWSER_CONFIG["TIMEOUT"],
-                    )
-                except Exception as exc:
-                    raise RuntimeError(
-                        "Google Maps never showed a place title — the URL is "
-                        "likely invalid or the page failed to load."
-                    ) from exc
-                time.sleep(1)
+                self._wait_for_title(page)
+
+                # Reload shakes off partial renders; re-wait the title
+                # instead of a fixed sleep so a surviving title returns in
+                # milliseconds while a real re-render still waits it out.
                 page.reload(wait_until="domcontentloaded")
-                time.sleep(3)
+                self._wait_for_title(page)
 
                 # Fail fast: the anti-bot banner is already on the DOM when
                 # the limited view is active, so don't bother opening tabs.
@@ -163,6 +193,20 @@ class MapsScraper:
         finally:
             shutil.rmtree(self.profile_path, ignore_errors=True)
             self.profile_path = None
+
+    @staticmethod
+    def _wait_for_title(page):
+        """Wait for the place title; fail loudly when it never renders."""
+        try:
+            page.wait_for_selector(
+                CSS_SELECTORS["BUSINESS_TITLE"],
+                timeout=BROWSER_CONFIG["TIMEOUT"],
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "Google Maps never showed a place title — the URL is "
+                "likely invalid or the page failed to load."
+            ) from exc
 
     def _is_limited_view(self, page):
         """True when Google shows the anti-bot banner with only ~5 reviews."""
@@ -201,15 +245,26 @@ class MapsScraper:
         # Wait for the review list to actually render before scrolling.
         # Without this, _scroll_reviews can start while only the first
         # batch (or zero cards) is present and exit early with ~5 reviews.
+        # Settle-wait, not a fixed sleep: returns as soon as the batch
+        # stops growing.
+        card_sel = f".{CSS_SELECTORS['REVIEW_CARD']}"
         try:
             page.wait_for_selector(
-                f".{CSS_SELECTORS['REVIEW_CARD']}",
+                card_sel,
                 timeout=BROWSER_CONFIG["TIMEOUT"],
             )
         except Exception:
             logger.warning("No review cards appeared after opening reviews tab.")
             return False
-        time.sleep(2)
+
+        def card_count():
+            try:
+                return page.locator(card_sel).count()
+            except Exception:
+                return None
+
+        settled = _wait_for_stable_count(card_count)
+        logger.debug("Review list settled at %s cards.", settled)
         return True
 
     @staticmethod
@@ -318,8 +373,17 @@ class MapsScraper:
             raise TransientScrapeError(
                 f"switching review filter to Google failed ({exc})"
             )
-        time.sleep(2)
-        logger.info("Review filter switched to 'Google'.")
+
+        # Settle: the list may update in place after the switch; proceed
+        # as soon as the count stops changing instead of a fixed sleep.
+        def card_count():
+            try:
+                return page.locator(card_sel).count()
+            except Exception:
+                return None
+
+        settled = _wait_for_stable_count(card_count)
+        logger.info("Review filter switched to 'Google' (%s cards).", settled)
 
     def _find_scrollable_pane(self, page):
         """Return a handle to the actual scrollable reviews container.
