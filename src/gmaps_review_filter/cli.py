@@ -214,8 +214,8 @@ def main(argv: list[str] | None = None) -> int:
         except (KeyboardInterrupt, EOFError):
             print("\nGoodbye!")
             return EXIT_OK
-        except Exception as exc:
-            print(f"Error: {exc}")
+        except Exception:
+            logger.exception("Unexpected error in interactive loop; continuing")
 
 
 if __name__ == "__main__":

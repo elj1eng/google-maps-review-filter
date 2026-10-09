@@ -1,6 +1,7 @@
 """Tests for CLI helpers and locale matching (offline)."""
 
 import json
+import logging
 import re
 import sys
 
@@ -75,6 +76,23 @@ def test_stdout_hardening_tolerates_bare_stdout(monkeypatch):
 
     monkeypatch.setattr(sys, "stdout", BareStdout())
     main.ensure_utf8_stdout()
+
+
+def test_interactive_loop_logs_unexpected_errors(monkeypatch, caplog):
+    """The loop's except-Exception must log a traceback, not print() it away."""
+    responses = iter([RuntimeError("boom"), "q"])
+
+    def fake_input(prompt=""):
+        response = next(responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    with caplog.at_level(logging.ERROR):
+        assert main.main([]) == 0
+    assert "boom" in caplog.text
+    assert "Traceback" in caplog.text
 
 
 def test_parser_flags():
