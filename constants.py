@@ -8,6 +8,7 @@ class SelectorMeta(TypedDict):
 
 CSS_SELECTORS: dict[str, str] = {
     "BUSINESS_TITLE": "h1",
+    "SPOT_HEADER": "jANrlb",
     "REVIEWS_TAB": "div.Gpq6kf.NlVald",
     "REVIEW_CARD": "jftiEf",
     "METADATA": "RfnDt",
@@ -35,6 +36,7 @@ SCROLLABLE_PANE_CANDIDATES: list[str] = [
 # primary is updated after a Maps markup change.
 SELECTOR_META: dict[str, SelectorMeta] = {
     "BUSINESS_TITLE": {"observed": "2026-10", "fallbacks": []},
+    "SPOT_HEADER": {"observed": "2026-10", "fallbacks": []},
     "REVIEWS_TAB": {
         "observed": "2026-10",
         "fallbacks": ["button.hh2c6"],

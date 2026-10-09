@@ -355,9 +355,11 @@ class MapsScraper:
     def _wheel_scroll(self, page, pane, wheel_px):
         """Scroll the reviews pane with real wheel input.
 
+        Returns True only when trusted wheel input was delivered.
         Maps only lazy-loads new review batches in response to trusted
         input events; assigning `scrollTop` via JS scrolls the DOM but
-        never triggers the next batch (stalls at the first 5 cards).
+        never triggers the next batch (stalls at the first 5 cards), so
+        the JS assignment below runs as a last resort but reports False.
         """
         try:
             box = pane.bounding_box()
@@ -373,9 +375,9 @@ class MapsScraper:
             pass
         try:
             pane.evaluate("el => el.scrollTop = el.scrollHeight")
-            return True
         except Exception:
-            return False
+            pass
+        return False
 
     def _scroll_reviews(self, page):
         logger.info("Scrolling review list dynamically...")

@@ -4,16 +4,10 @@ ast-serialize==0.12.1
     # via mypy
 beautifulsoup4==4.15.0
     # via gmaps-review-filter (pyproject.toml)
-certifi==2026.7.22
-    # via requests
-charset-normalizer==3.5.2
-    # via requests
 coverage==7.16.2
     # via gmaps-review-filter (pyproject.toml:dev)
 greenlet==3.5.6
     # via playwright
-idna==3.20
-    # via requests
 iniconfig==2.3.1
     # via pytest
 librt==0.16.0
@@ -36,8 +30,6 @@ pygments==2.21.0
     # via pytest
 pytest==9.1.1
     # via gmaps-review-filter (pyproject.toml:dev)
-requests==2.34.2
-    # via gmaps-review-filter (pyproject.toml)
 ruff==0.16.10
     # via gmaps-review-filter (pyproject.toml:dev)
 soupsieve==2.10
@@ -47,5 +39,3 @@ typing-extensions==4.16.0
     #   beautifulsoup4
     #   mypy
     #   pyee
-urllib3==2.8.0
-    # via requests

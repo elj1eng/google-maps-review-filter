@@ -1,10 +1,11 @@
 """Tests for CLI helpers and locale matching (offline)."""
 
 import json
+import sys
 
 import main
 from main import build_parser, format_human, report_to_dict, run_once
-from scraper import MapsScraper, _matches_any, detect_lang
+from scraper import MapsScraper, PermanentScrapeError, _matches_any, detect_lang
 from tests.test_analyzer import FIXTURES
 
 SUMMARY = {"name": "Test Spot", "rating": "4.5", "total": "1250"}
@@ -54,6 +55,17 @@ def test_parser_defaults():
     assert args.verbose is False
 
 
+def test_stdout_hardening_tolerates_bare_stdout(monkeypatch):
+    """No reconfigure attr / encoding None must not raise (old code crashed
+    at import with AttributeError on encoding.lower())."""
+
+    class BareStdout:
+        encoding = None
+
+    monkeypatch.setattr(sys, "stdout", BareStdout())
+    main.ensure_utf8_stdout()
+
+
 def test_parser_flags():
     args = build_parser().parse_args(
         ["https://x", "--target", "50", "--trust-threshold", "5", "--json", "--verbose"]
@@ -80,20 +92,78 @@ def test_matches_any_english_and_vietnamese():
     assert not _matches_any("", ("review",))
 
 
+def _fixture_factory(html_name=None, error=None):
+    """Build a MapsScraper-compatible factory for run_once injection.
+
+    Serves frozen fixture HTML (or raises) without launching a browser.
+    """
+    html = (FIXTURES / html_name).read_text(encoding="utf-8") if html_name else ""
+
+    class FakeScraper:
+        def __init__(self, url, target_reviews=None):
+            self.url = url
+            self.target_reviews = target_reviews
+
+        def fetch_html(self):
+            if error is not None:
+                raise error
+            return html
+
+    return FakeScraper
+
+
+def _run(url="https://www.google.com/maps/place/X", factory=None, **kwargs):
+    opts = {"target": 50, "trust_threshold": 10, "as_json": True}
+    opts.update(kwargs)
+    return run_once(url, scraper_factory=factory, **opts)
+
+
 def test_run_once_json_stdout_is_pure_json(monkeypatch, capsys):
     """Diagnostics go to stderr; stdout parses as JSON (pipeable)."""
-    html = (FIXTURES / "restaurant.html").read_text(encoding="utf-8")
-    monkeypatch.setattr(main, "is_google_maps_responsive", lambda url: True)
-    monkeypatch.setattr(MapsScraper, "fetch_html", lambda self: html)
-    code = run_once(
-        "https://www.google.com/maps/place/X",
-        target=50,
-        trust_threshold=10,
-        as_json=True,
-    )
+    code = _run(factory=_fixture_factory("restaurant.html"))
     assert code == 0
     out, err = capsys.readouterr()
     data = json.loads(out)
     assert data["sample"] == 4
     assert data["trust_threshold"] == 10
     assert "Validating" in err
+
+
+def test_no_head_request_gate():
+    """The HEAD-request pre-check is gone: URL verdicts come from the scraper.
+
+    A bare HEAD without User-Agent gets 403/405 from Google for valid
+    place URLs, so the check wrongly rejected them with EXIT_BAD_URL.
+    """
+    assert not hasattr(main, "is_google_maps_responsive")
+
+
+def test_run_once_uses_injected_factory_not_maps_scraper(monkeypatch, capsys):
+    """The factory seam is real: MapsScraper is never touched."""
+    monkeypatch.setattr(
+        MapsScraper,
+        "fetch_html",
+        lambda self: (_ for _ in ()).throw(AssertionError("must not launch a browser")),
+    )
+    code = _run(factory=_fixture_factory("restaurant.html"))
+    assert code == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["sample"] == 4
+
+
+def test_run_once_permanent_error_exits_bad_url(monkeypatch, capsys):
+    code = _run(factory=_fixture_factory(error=PermanentScrapeError("no Google")))
+    assert code == 2
+    assert "no Google" in capsys.readouterr().err
+
+
+def test_run_once_generic_error_exits_scrape_failed(monkeypatch, capsys):
+    code = _run(factory=_fixture_factory(error=ValueError("boom")))
+    assert code == 1
+    assert "boom" in capsys.readouterr().err
+
+
+def test_run_once_empty_report_exits_scrape_failed(monkeypatch, capsys):
+    code = _run(factory=_fixture_factory())
+    assert code == 1
+    assert "No review cards" in capsys.readouterr().err

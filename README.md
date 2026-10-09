@@ -12,23 +12,11 @@ CLI tool that scrapes Google Maps reviews for a place URL, then filters out low-
    - Split by `THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]` (default 10, or `--trust-threshold`): `<= limit` = filtered, `> limit` = trusted
    - Reports trusted ratio, all avg vs trusted avg. Cards with no parseable rating are excluded from both averages and reported as unparseable (a markup-change tripwire, not silent data loss).
 
-## The Algorithms
+## The Algorithm
 
-The script evaluates the sampled reviews based on two primary statistical metrics:
+The script splits sampled reviewers on history depth, then compares the trusted slice against the whole sample.
 
-### 1. Low-Activity Density
-
-Measures the proportion of low-history accounts.
-
-$$
-P_{Filtered} = \frac{N_{filtered}}{N_{total}}
-$$
-
-where `N_filtered` = reviewers with <= 10 reviews, `N_total` = total scanned.
-
-- **Logic:** Reviewers with `<= 10` reviews (`THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]` in `constants.py`) are counted as filtered. A high $P_{Filtered}$ suggests the rating may be inflated by one-off / low-activity accounts.
-
-### 2. Trusted Reviewer Metric
+### Trusted Reviewer Metric
 
 Calculates the average rating by excluding low-activity accounts.
 
@@ -44,7 +32,7 @@ $$
 Ratio_{Trusted} = \frac{N_{trusted}}{N_{filtered} + N_{trusted}} \times 100\%
 $$
 
-over classified cards only (`N/A` when none classified).
+over classified cards only (`N/A` when none classified). A high filtered share suggests the rating may be inflated by one-off / low-activity accounts.
 
 - The report shows `Average rating (all)` vs `Average rating (trusted only)` so you can see how much low-activity reviews skew the score. Both averages cover classified cards only; cards with no parseable rating are counted separately (`Unparseable cards`), and the ratio reads `N/A` when nothing was classified.
 

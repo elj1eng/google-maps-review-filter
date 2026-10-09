@@ -3,8 +3,6 @@ import json
 import logging
 import sys
 
-import requests
-
 from analyzer import ReviewAnalyzer
 from constants import BROWSER_CONFIG, THRESHOLDS
 from scraper import MapsScraper, PermanentScrapeError
@@ -15,8 +13,18 @@ EXIT_BAD_URL = 2
 
 logger = logging.getLogger(__name__)
 
-if sys.stdout.encoding.lower() != "utf-8":
-    sys.stdout.reconfigure(encoding="utf-8")
+
+def ensure_utf8_stdout():
+    """Reconfigure stdout to UTF-8 when possible; never raise.
+
+    stdout can lack a reconfigure method (captured/piped streams) or
+    report encoding None (embedded contexts) — both must be no-ops.
+    """
+    stdout = sys.stdout
+    reconfigure = getattr(stdout, "reconfigure", None)
+    encoding = (getattr(stdout, "encoding", None) or "").lower()
+    if callable(reconfigure) and encoding != "utf-8":
+        reconfigure(encoding="utf-8")
 
 
 def build_parser():
@@ -48,14 +56,6 @@ def build_parser():
         "--verbose", action="store_true", help="debug logging from the scraper"
     )
     return parser
-
-
-def is_google_maps_responsive(url: str) -> bool:
-    try:
-        response = requests.head(url, timeout=5, allow_redirects=False)
-        return response.status_code in [200, 301, 302]
-    except Exception:
-        return False
 
 
 def report_to_dict(summary, report, limit):
@@ -113,19 +113,17 @@ def format_human(summary, report, limit):
     return "\n".join(parts)
 
 
-def run_once(url, *, target, trust_threshold, as_json):
+def run_once(url, *, target, trust_threshold, as_json, scraper_factory=MapsScraper):
     """Scrape and report one URL. Returns a process exit code.
 
     Diagnostics go to stderr; only the final report goes to stdout so
-    --json output stays pipeable.
+    --json output stays pipeable. scraper_factory is injectable for
+    tests (must accept (url, target_reviews=...) like MapsScraper).
     """
     print("Validating URL...", file=sys.stderr)
-    if not is_google_maps_responsive(url):
-        print("Error: The URL did not return a valid response.", file=sys.stderr)
-        return EXIT_BAD_URL
     try:
         print(f"Initializing scraper for: {url}", file=sys.stderr)
-        html_content = MapsScraper(url, target_reviews=target).fetch_html()
+        html_content = scraper_factory(url, target_reviews=target).fetch_html()
     except PermanentScrapeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_BAD_URL
@@ -150,6 +148,7 @@ def run_once(url, *, target, trust_threshold, as_json):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    ensure_utf8_stdout()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s: %(message)s",

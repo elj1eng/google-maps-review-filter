@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from bs4 import BeautifulSoup  # noqa: E402
 
 from analyzer import ReviewAnalyzer  # noqa: E402
+from constants import CSS_SELECTORS  # noqa: E402
 from scraper import MapsScraper  # noqa: E402
 
 OUT = Path(__file__).parent / "fixtures"
@@ -46,7 +47,7 @@ SPOTS = {
 def trim(html, url, indices):
     soup = BeautifulSoup(html, "html.parser")
     parts = [f"<!-- provenance: trimmed from {url} (refreshed) -->"]
-    header = soup.find("div", class_="jANrlb")
+    header = soup.find("div", class_=CSS_SELECTORS["SPOT_HEADER"])
     if header:
         parts.append(str(header))
     name_btn = soup.find("button", attrs={"data-bundle-id": True})
@@ -58,12 +59,17 @@ def trim(html, url, indices):
     return "<html><body>\n" + "\n".join(parts) + "\n</body></html>"
 
 
-for name, (url, indices) in SPOTS.items():
-    print(f"scraping {name} ...", flush=True)
-    html = MapsScraper(url).fetch_html()
-    doc = trim(html, url, indices)
-    (OUT / name).write_text(doc, encoding="utf-8")
-    rep = ReviewAnalyzer(doc).analyze_reviews()
-    print(f"wrote {name} ({len(doc)} bytes): {rep}", flush=True)
-    time.sleep(15)
-print("done: update frozen assertions in tests/test_analyzer.py to match")
+def main():
+    for name, (url, indices) in SPOTS.items():
+        print(f"scraping {name} ...", flush=True)
+        html = MapsScraper(url).fetch_html()
+        doc = trim(html, url, indices)
+        (OUT / name).write_text(doc, encoding="utf-8")
+        rep = ReviewAnalyzer(doc).analyze_reviews()
+        print(f"wrote {name} ({len(doc)} bytes): {rep}", flush=True)
+        time.sleep(15)
+    print("done: update frozen assertions in tests/test_analyzer.py to match")
+
+
+if __name__ == "__main__":
+    main()

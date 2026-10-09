@@ -25,7 +25,7 @@ class ReviewAnalyzer:
             if name_el:
                 summary["name"] = name_el.get_text().strip()
 
-        header = self.soup.find("div", class_=re.compile("jANrlb"))
+        header = self.soup.find("div", class_=re.compile(CSS_SELECTORS["SPOT_HEADER"]))
         if header:
             rating_el = header.find(
                 "div", class_=re.compile(CSS_SELECTORS["RATING_VALUE"])

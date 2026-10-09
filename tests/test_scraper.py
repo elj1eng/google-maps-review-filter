@@ -124,9 +124,30 @@ def test_locate_empty_returns_primary():
     assert loc.count() == 0
 
 
+def test_refresh_fixtures_import_has_no_side_effects(monkeypatch):
+    """Importing the refresh tool must not scrape (network on import)."""
+    import importlib
+
+    def no_network(self):
+        raise AssertionError("must not scrape on import")
+
+    monkeypatch.setattr(MapsScraper, "fetch_html", no_network)
+    importlib.import_module("tests.refresh_fixtures")
+
+
 def test_every_string_selector_has_registry_entry():
     string_keys = {k for k, v in CSS_SELECTORS.items() if isinstance(v, str)}
     assert string_keys <= set(SELECTOR_META)
     for key, meta in SELECTOR_META.items():
         assert meta["observed"], key
         assert isinstance(meta["fallbacks"], list), key
+
+
+def test_spot_header_selector_is_registered():
+    """The analyzer's header class must live in the registry, not inline.
+
+    jANrlb was hardcoded in analyzer.get_spot_summary: the one selector
+    that rotates silently was the one the registry couldn't see.
+    """
+    assert CSS_SELECTORS["SPOT_HEADER"] == "jANrlb"
+    assert "SPOT_HEADER" in SELECTOR_META
