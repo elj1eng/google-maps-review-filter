@@ -42,6 +42,9 @@ ignore = ["BLE001", "S110", "S112"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "live: network end-to-end checks against fixed Google Maps spots",
+]
 
 [tool.coverage.run]
 source = ["gmaps_review_filter"]

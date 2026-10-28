@@ -93,9 +93,11 @@ Options:
 Exit codes: `0` success, `1` scrape/analysis failure, `2` bad URL.
 
 While reviews load, a single-line progress bar (`Loading reviews [███░░░] 120/210 (57%)`)
-is redrawn on stderr each time another batch arrives. It appears only when
-stderr is a TTY, restarts per retry attempt, and is replaced with periodic log
-lines under `--verbose` or when output is piped (`--json` output stays clean).
+is drawn on stderr as soon as scrolling starts and redrawn each time another
+batch arrives. It appears only when stderr is a TTY, fits the terminal width
+(so the redraw never wraps), restarts per retry attempt (`----` separates
+attempts), and is replaced with periodic log lines under `--verbose` or when
+output is piped (`--json` output stays clean).
 
 ### Signed-in sessions (`--login`)
 
@@ -145,12 +147,20 @@ Average rating (trusted only): 4.44 / 5
 ## Testing
 
 ```bash
-uv run pytest               # offline, ~1s (paths configured in pyproject.toml)
+uv run pytest               # offline suite, ~1s (live spots skip without a session)
+uv run pytest -m live       # 3 fixed spots end-to-end (needs --login; minutes)
+uv run pytest -m "not live" # force the fast offline-only suite
 uv run ruff check . && uv run ruff format --check .
 uv run mypy --strict src/gmaps_review_filter/analyzer.py src/gmaps_review_filter/config.py
-uv run coverage run -m pytest -q
+uv run coverage run -m pytest -m "not live"
 uv run coverage report      # include + fail-under=100 configured in pyproject.toml
 ```
+
+`tests/test_live_spots.py` scrapes three fixed spots (Brisnie Matcha,
+Marina Bay Sands, Peter Luger) through the real CLI and checks the names,
+totals, sample size and report invariants. It runs automatically when a
+saved session exists (`--login`), because anonymous sessions only see ~5
+reviews; otherwise it skips. `GMAPS_LIVE=1` forces it on.
 
 All of the above runs in CI on push/PR. Fixtures are trimmed excerpts of
 real pages (`tests/fixtures/`, provenance in file headers); refresh them
