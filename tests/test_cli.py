@@ -12,6 +12,7 @@ from gmaps_review_filter.cli import (
     report_to_dict,
     run_once,
 )
+from gmaps_review_filter.config import BROWSER_CONFIG
 from gmaps_review_filter.scraper import (
     MapsScraper,
     PermanentScrapeError,
@@ -104,6 +105,56 @@ def test_parser_flags():
     assert args.trust_threshold == 5
     assert args.json is True
     assert args.verbose is True
+    assert args.login is False
+    assert args.auth_state is None
+
+
+def test_parser_login_and_auth():
+    args = build_parser().parse_args(["--login", "--auth", "session.json"])
+    assert args.login is True
+    assert args.auth_state == "session.json"
+
+
+def test_login_saves_state_and_exits_ok(monkeypatch, capsys):
+    monkeypatch.setattr(main, "login_and_save_state", lambda path: "/saved/auth.json")
+    assert main.main(["--login"]) == 0
+    assert "Saved Google session to /saved/auth.json" in capsys.readouterr().err
+
+
+def test_login_timeout_exits_scrape_failed(monkeypatch, capsys):
+    def boom(path):
+        raise PermanentScrapeError("no Google sign-in detected")
+
+    monkeypatch.setattr(main, "login_and_save_state", boom)
+    assert main.main(["--login"]) == 1
+    assert "no Google sign-in detected" in capsys.readouterr().err
+
+
+def test_run_once_passes_auth_state_to_factory(monkeypatch, capsys, tmp_path):
+    seen = {}
+    state = tmp_path / "auth.json"
+    state.write_text("{}", encoding="utf-8")
+
+    class FakeScraper:
+        def __init__(self, url, target_reviews=None, auth_state=None):
+            seen["auth_state"] = auth_state
+
+        def fetch_html(self):
+            return (FIXTURES / "restaurant.html").read_text(encoding="utf-8")
+
+    code = _run(factory=FakeScraper, auth_state=str(state))
+    assert code == 0
+    assert seen["auth_state"] == str(state)
+    assert "no saved Google session" not in capsys.readouterr().err
+
+
+def test_run_once_hints_when_no_session(monkeypatch, capsys, tmp_path):
+    monkeypatch.setitem(
+        BROWSER_CONFIG, "AUTH_STATE_PATH", str(tmp_path / "absent.json")
+    )
+    code = _run(factory=_fixture_factory("restaurant.html"))
+    assert code == 0
+    assert "Run --login" in capsys.readouterr().err
 
 
 def test_detect_lang():

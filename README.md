@@ -5,7 +5,7 @@ CLI tool that scrapes Google Maps reviews for a place URL, then filters out low-
 ## How it works
 
 1. `cli.py` validates the URL (a `/maps/place/` page or Maps short link — search-list URLs are rejected before any browser launches), runs `MapsScraper.fetch_html()`, then `ReviewAnalyzer`, and reports wall-clock time on stderr.
-2. `scraper.py` uses Playwright (headless Chromium) to open the place page, click the Reviews tab, filter hotel tabs to Google-only reviews, auto-scroll to load review cards, and return page HTML. Transient failures (anti-bot limited view, render flakes) retry with backoff; deterministic failures raise immediately.
+2. `scraper.py` uses Playwright (headless Chromium) to open the place page, click the Reviews tab, filter hotel tabs to Google-only reviews, auto-scroll to load review cards, and return page HTML. A saved Google session (`--login`) is loaded when present; anonymous sessions only see ~5 reviews. Transient failures (anti-bot limited view, render flakes) retry with backoff; deterministic failures raise immediately.
 3. `analyzer.py` parses with BeautifulSoup:
    - Spot summary: name, rating, total reviews
    - Per-review: star rating + reviewer review count
@@ -87,8 +87,26 @@ Options:
 | `--trust-threshold N` | 10 | reviewers above N reviews count as trusted |
 | `--json` | off | machine-readable JSON on stdout (diagnostics go to stderr) |
 | `--verbose` | off | debug logging from the scraper |
+| `--login` | off | open the `accounts.google.com` sign-in page in a headed browser, then save the session |
+| `--auth PATH` | `~/.config/gmaps-filter/auth.json` | saved session file used for scraping |
 
 Exit codes: `0` success, `1` scrape/analysis failure, `2` bad URL.
+
+### Signed-in sessions (`--login`)
+
+Google truncates anonymous Maps sessions to ~5 reviews behind a sign-in
+wall, regardless of scrolling or clicking "See more reviews". A saved
+session lifts that wall:
+
+```bash
+uv run gmaps-filter --login
+# sign in to Google on the accounts.google.com page that opens
+```
+
+The session is written to `~/.config/gmaps-filter/auth.json` (mode `600`,
+gitignored). It is a credential: treat it like a password. Sessions expire;
+when runs start hitting the 5-review wall again, re-run `--login`. Scraping
+works without it, but only sees ~5 reviews per spot.
 
 ### Example Output
 
@@ -110,12 +128,12 @@ Average rating (trusted only): 4.44 / 5
 
 ## Project Structure
 
-- `src/gmaps_review_filter/cli.py`: argparse CLI (`--target`, `--trust-threshold`, `--json`, `--verbose`), exit codes 0/1/2, human/JSON report rendering (`gmaps-filter` entry point).
-- `src/gmaps_review_filter/scraper.py`: Playwright navigation, Reviews tab handling, hotel Google-only filter, dynamic scroll.
+- `src/gmaps_review_filter/cli.py`: argparse CLI (`--target`, `--trust-threshold`, `--json`, `--verbose`, `--login`, `--auth`), exit codes 0/1/2, human/JSON report rendering (`gmaps-filter` entry point).
+- `src/gmaps_review_filter/scraper.py`: Playwright navigation, Reviews tab handling, hotel Google-only filter, dynamic scroll, saved-session restore, `--login` helper.
 - `src/gmaps_review_filter/errors.py`: transient vs permanent error taxonomy.
 - `src/gmaps_review_filter/analyzer.py`: BeautifulSoup parsing, spot summary, trusted/filtered split (fully typed, 100% covered).
 - `src/gmaps_review_filter/selectors.py`: CSS selectors + `SELECTOR_META` volatility registry.
-- `src/gmaps_review_filter/config.py`: thresholds, browser tuning, `LOCALE_STRINGS` (en/vi UI matching).
+- `src/gmaps_review_filter/config.py`: thresholds, browser tuning, `LOCALE_STRINGS` (en/vi UI matching), saved-session path and login URL/timeout.
 - `pyproject.toml` / `uv.lock`: dependencies (`requirements.txt` generated from these).
 - `tests/`: pytest suite — analyzer golden fixtures plus offline scraper-policy and CLI tests. Only the refresh tool needs the network.
 
@@ -143,6 +161,7 @@ and intentionally not refreshed (live scrapes are Google-only by design).
 - Selector fragility: Google Maps markup changes frequently; `SELECTOR_META` in `constants.py` records when each selector was last observed — bump it when you update one.
 - Locales: UI matching covers English and Vietnamese (`LOCALE_STRINGS`); other locales fall back to English keywords and may fail to open tabs.
 - Rate limiting / CAPTCHA: aggressive scrolling may trigger throttling; slow down `SCROLL_*` settings if so.
+- Anonymous sessions: Google truncates the review feed to ~5 cards behind a sign-in wall that reloading or "See more reviews" cannot bypass. Run `--login` once to scrape signed in; the saved session expires eventually and must be refreshed.
 - Heuristic only: review count per reviewer is a weak fraud signal — high-activity accounts can still be fake, low-activity accounts can still be genuine.
 
 ## Disclaimer

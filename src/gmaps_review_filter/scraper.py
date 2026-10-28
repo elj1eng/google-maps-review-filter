@@ -1,9 +1,12 @@
+import json
 import logging
+import random
 import re
 import shutil
 import tempfile
 import time
 import urllib.parse
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
@@ -26,6 +29,111 @@ WEBDRIVER_MASK_JS = (
 
 # Hosts whose links resolve (via redirect) to a place page.
 _SHORT_HOSTS = ("maps.app.goo.gl", "goo.gl")
+
+# Cookies Google sets once a browser is signed in. Any one of them means
+# the session can see the full review feed instead of the ~5-card wall.
+GOOGLE_SESSION_COOKIES = ("SID", "SAPISID", "SSID")
+
+
+def _retry_delay_s(attempt: int) -> float:
+    """Jittered exponential backoff for inter-attempt waits (1-based)."""
+    base = BROWSER_CONFIG["RETRY_BASE_S"]
+    cap = BROWSER_CONFIG["RETRY_CAP_S"]
+    jitter = BROWSER_CONFIG["RETRY_JITTER_S"]
+    return min(base * 2 ** (attempt - 1), cap) + random.uniform(0, jitter)  # noqa: S311
+
+
+def _pre_reload_delay_s() -> float:
+    """Settle delay before a reload so rapid double-loads don't flag bots."""
+    base = BROWSER_CONFIG["PRE_RELOAD_DELAY_S"]
+    jitter = BROWSER_CONFIG["PRE_RELOAD_JITTER_S"]
+    return base + random.uniform(0, jitter)  # noqa: S311
+
+
+def has_google_session(cookies) -> bool:
+    """True when a cookie jar carries at least one signed-in Google cookie."""
+    return any(
+        c.get("name") in GOOGLE_SESSION_COOKIES and c.get("value") for c in cookies
+    )
+
+
+def resolve_auth_state(auth_state: str | None = None) -> str | None:
+    """Return the saved session path, or None when it doesn't exist yet.
+
+    Anonymous scraping still works: it just hits the ~5-review wall, so a
+    missing file is a fallback, not an error.
+    """
+    path = Path(auth_state or BROWSER_CONFIG["AUTH_STATE_PATH"]).expanduser()
+    return str(path) if path.is_file() else None
+
+
+def save_storage_state(context, path) -> str:
+    """Persist the browser session as JSON, readable by the owner only."""
+    target = Path(path).expanduser()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    context.storage_state(path=str(target))
+    target.chmod(0o600)
+    return str(target)
+
+
+def load_storage_cookies(path) -> list[dict]:
+    """Read cookies from a saved storage_state file; [] when unusable.
+
+    launch_persistent_context does not accept storage_state on this
+    Playwright build, so sessions are restored with add_cookies instead.
+    """
+    try:
+        data = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Could not read saved session %s: %s", path, exc)
+        return []
+    cookies = data.get("cookies") if isinstance(data, dict) else None
+    return cookies if isinstance(cookies, list) else []
+
+
+def login_and_save_state(
+    path: str | None = None, *, timeout_s: float | None = None
+) -> str:
+    """Open a headed browser, wait for a Google sign-in, save the session.
+
+    Polls the cookie jar instead of prompting the terminal, so the flow
+    also works when stdin is not a TTY. Raises PermanentScrapeError on
+    timeout: this is a setup step, retrying cannot fix a missing login.
+    """
+    target = str(Path(path or BROWSER_CONFIG["AUTH_STATE_PATH"]).expanduser())
+    timeout = timeout_s if timeout_s is not None else BROWSER_CONFIG["LOGIN_TIMEOUT_S"]
+    poll_s = BROWSER_CONFIG["LOGIN_POLL_S"]
+    profile_path = tempfile.mkdtemp(prefix="gmaps_login_")
+    saved = None
+    try:
+        with sync_playwright() as playwright:
+            context = playwright.chromium.launch_persistent_context(
+                profile_path,
+                headless=False,
+                args=["--disable-blink-features=AutomationControlled"],
+                user_agent=BROWSER_CONFIG["USER_AGENT"],
+                viewport=BROWSER_CONFIG["VIEWPORT"],
+            )
+            page = context.pages[0]
+            page.goto(BROWSER_CONFIG["LOGIN_URL"], wait_until="domcontentloaded")
+            logger.info(
+                "Sign in to Google in the opened window (waiting up to %ss).",
+                timeout,
+            )
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if has_google_session(context.cookies()):
+                    saved = save_storage_state(context, target)
+                    break
+                time.sleep(poll_s)
+            context.close()
+    finally:
+        shutil.rmtree(profile_path, ignore_errors=True)
+    if saved is None:
+        raise PermanentScrapeError(
+            f"no Google sign-in detected within {timeout}s — run --login again."
+        )
+    return saved
 
 
 def _matches_any(text, keywords):
@@ -112,9 +220,10 @@ class ScrapeSession:
     concurrent runs never share a profile.
     """
 
-    def __init__(self):
+    def __init__(self, storage_state=None):
         self.profile_path = tempfile.mkdtemp(prefix="gmaps_")
         self._playwright = None
+        self.storage_state = storage_state
 
     def __enter__(self):
         self._playwright = sync_playwright().start()
@@ -125,6 +234,15 @@ class ScrapeSession:
             user_agent=BROWSER_CONFIG["USER_AGENT"],
             viewport=BROWSER_CONFIG["VIEWPORT"],
         )
+        if self.storage_state:
+            cookies = load_storage_cookies(self.storage_state)
+            if cookies:
+                try:
+                    context.add_cookies(cookies)
+                except Exception as exc:
+                    logger.warning(
+                        "Saved session rejected (%s); running anonymous.", exc
+                    )
         page = context.pages[0]
         page.add_init_script(WEBDRIVER_MASK_JS)
         return page
@@ -151,10 +269,12 @@ def _card_counter(page, card_sel):
 
 
 class MapsScraper:
-    def __init__(self, url, target_reviews=None):
+    def __init__(self, url, target_reviews=None, auth_state=None):
         # Fail fast on non-place URLs: no browser is launched for them.
         self.url = validate_place_url(url)
         self.target = target_reviews or BROWSER_CONFIG["TARGET_REVIEWS"]
+        # A saved sign-in lifts the ~5-review wall; absent file = anonymous.
+        self.auth_state = resolve_auth_state(auth_state)
 
     def fetch_html(self):
         """Scrape the reviews page.
@@ -188,28 +308,37 @@ class MapsScraper:
                     attempts,
                     exc,
                 )
-                # Exponential backoff (3s, 6s, 12s, 24s, 30s) to ride out
-                # limited-view bursts instead of hammering Google.
-                time.sleep(min(3 * 2 ** (attempt - 1), 30))
+                # Jittered exponential backoff (5s, 10s, 20s, 30s, 30s
+                # + 0-2s jitter) to ride out limited-view bursts instead
+                # of hammering Google on a fixed cadence.
+                if attempt < attempts:
+                    time.sleep(_retry_delay_s(attempt))
         raise RuntimeError(
             f"Scrape failed after {attempts} attempts ({last_error}). Try again later."
         )
 
     def _fetch_once(self):
-        with ScrapeSession() as page:
+        with ScrapeSession(self.auth_state) as page:
             page.goto(self.url, wait_until="domcontentloaded")
             self._wait_for_title(page)
 
-            # Reload shakes off partial renders; re-wait the title
-            # instead of a fixed sleep so a surviving title returns in
-            # milliseconds while a real re-render still waits it out.
-            page.reload(wait_until="domcontentloaded")
-            self._wait_for_title(page)
+            # Settle: a transient banner can clear on its own once JS
+            # finishes; checking immediately locks in a false positive.
+            time.sleep(BROWSER_CONFIG["POST_GOTO_SETTLE_S"])
 
-            # Fail fast: the anti-bot banner is already on the DOM when
-            # the limited view is active, so don't bother opening tabs.
+            # Conditional reload: skip the second navigation on the happy
+            # path. Back-to-back goto+reload from a fresh profile reads as
+            # automation and triggers the limited view itself.
             if self._is_limited_view(page):
-                raise TransientScrapeError(LIMITED_VIEW_MSG)
+                # Wait longer before the refresh instead of hammering it.
+                time.sleep(_pre_reload_delay_s())
+                page.reload(wait_until="domcontentloaded")
+                self._wait_for_title(page)
+
+                # Fail fast: the anti-bot banner is already on the DOM
+                # when the limited view is active, so don't open tabs.
+                if self._is_limited_view(page):
+                    raise TransientScrapeError(LIMITED_VIEW_MSG)
 
             opened = self._open_reviews_tab(page)
             if opened and self._is_limited_view(page):

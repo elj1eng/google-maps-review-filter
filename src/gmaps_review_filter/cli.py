@@ -3,12 +3,13 @@ import json
 import logging
 import sys
 import time
+from pathlib import Path
 from typing import Any, Protocol
 
 from gmaps_review_filter.analyzer import ReviewAnalyzer, ReviewReport, SpotSummary
 from gmaps_review_filter.config import BROWSER_CONFIG, THRESHOLDS
 from gmaps_review_filter.errors import PermanentScrapeError
-from gmaps_review_filter.scraper import MapsScraper
+from gmaps_review_filter.scraper import MapsScraper, login_and_save_state
 
 EXIT_OK = 0
 EXIT_SCRAPE_FAILED = 1
@@ -22,7 +23,12 @@ class Scraper(Protocol):
 
 
 class ScraperFactory(Protocol):
-    def __call__(self, url: str, target_reviews: int | None = ...) -> Scraper: ...
+    def __call__(
+        self,
+        url: str,
+        target_reviews: int | None = ...,
+        auth_state: str | None = ...,
+    ) -> Scraper: ...
 
 
 def ensure_utf8_stdout() -> None:
@@ -65,6 +71,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--verbose", action="store_true", help="debug logging from the scraper"
+    )
+    parser.add_argument(
+        "--login",
+        action="store_true",
+        help="open a headed browser to sign in to Google, then save the session",
+    )
+    parser.add_argument(
+        "--auth",
+        metavar="PATH",
+        dest="auth_state",
+        default=None,
+        help=(
+            f"saved Google session JSON (default: {BROWSER_CONFIG['AUTH_STATE_PATH']})"
+        ),
     )
     return parser
 
@@ -126,12 +146,24 @@ def format_human(summary: SpotSummary, report: ReviewReport, limit: int) -> str:
     return "\n".join(parts)
 
 
+def _auth_hint(auth_state: str | None) -> None:
+    """Tell the user once when scraping anonymously (5-review wall)."""
+    path = Path(auth_state or BROWSER_CONFIG["AUTH_STATE_PATH"]).expanduser()
+    if not path.is_file():
+        print(
+            f"Note: no saved Google session at {path}; anonymous runs only "
+            "see ~5 reviews. Run --login to save one.",
+            file=sys.stderr,
+        )
+
+
 def run_once(
     url: str,
     *,
     target: int,
     trust_threshold: int,
     as_json: bool,
+    auth_state: str | None = None,
     scraper_factory: ScraperFactory = MapsScraper,
 ) -> int:
     """Scrape and report one URL. Returns a process exit code.
@@ -148,6 +180,7 @@ def run_once(
             target=target,
             trust_threshold=trust_threshold,
             as_json=as_json,
+            auth_state=auth_state,
             scraper_factory=scraper_factory,
         )
     finally:
@@ -160,12 +193,17 @@ def _scrape_and_report(
     target: int,
     trust_threshold: int,
     as_json: bool,
+    auth_state: str | None,
     scraper_factory: ScraperFactory,
 ) -> int:
     print("Validating URL...", file=sys.stderr)
+    _auth_hint(auth_state)
     try:
         print(f"Initializing scraper for: {url}", file=sys.stderr)
-        html_content = scraper_factory(url, target_reviews=target).fetch_html()
+        kwargs: dict[str, Any] = {"target_reviews": target}
+        if auth_state:
+            kwargs["auth_state"] = auth_state
+        html_content = scraper_factory(url, **kwargs).fetch_html()
     except PermanentScrapeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_BAD_URL
@@ -199,7 +237,17 @@ def main(argv: list[str] | None = None) -> int:
         "target": args.target,
         "trust_threshold": args.trust_threshold,
         "as_json": args.json,
+        "auth_state": args.auth_state,
     }
+    if args.login:
+        print("Opening a browser window to sign in to Google...", file=sys.stderr)
+        try:
+            saved = login_and_save_state(args.auth_state)
+        except PermanentScrapeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return EXIT_SCRAPE_FAILED
+        print(f"Saved Google session to {saved}", file=sys.stderr)
+        return EXIT_OK
     if args.url:
         return run_once(args.url, **opts)
     while True:

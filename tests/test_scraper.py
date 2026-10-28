@@ -4,6 +4,7 @@ No browser is launched: the gate is pure URL parsing, retry is driven by
 stubbing _fetch_once, and _locate is exercised with a fake page.
 """
 
+import json
 import time
 from pathlib import Path
 
@@ -14,8 +15,14 @@ from gmaps_review_filter.scraper import (
     MapsScraper,
     PermanentScrapeError,
     TransientScrapeError,
+    _pre_reload_delay_s,
+    _retry_delay_s,
     _wait_for_stable_count,
+    has_google_session,
     is_throttled_stub,
+    load_storage_cookies,
+    resolve_auth_state,
+    save_storage_state,
     validate_place_url,
 )
 from gmaps_review_filter.selectors import CSS_SELECTORS, SELECTOR_META
@@ -194,6 +201,168 @@ def test_transient_exhaustion_raises_runtime_error(monkeypatch):
     with pytest.raises(RuntimeError, match=f"after {n} attempts"):
         MapsScraper(PLACE).fetch_html()
     assert len(calls) == n
+
+
+def test_no_sleep_after_final_attempt(monkeypatch):
+    n = BROWSER_CONFIG["FETCH_ATTEMPTS"]
+    _run_fetch(monkeypatch, [TransientScrapeError("x")] * n)
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    with pytest.raises(RuntimeError):
+        MapsScraper(PLACE).fetch_html()
+    assert len(sleeps) == n - 1
+
+
+def test_retry_delay_is_jittered_exponential(monkeypatch):
+    monkeypatch.setattr("gmaps_review_filter.scraper.random.uniform", lambda a, b: 1.5)
+    base = BROWSER_CONFIG["RETRY_BASE_S"]
+    cap = BROWSER_CONFIG["RETRY_CAP_S"]
+    assert _retry_delay_s(1) == base + 1.5
+    assert _retry_delay_s(2) == base * 2 + 1.5
+    assert _retry_delay_s(99) == cap + 1.5
+
+
+def test_pre_reload_delay_adds_jitter(monkeypatch):
+    monkeypatch.setattr("gmaps_review_filter.scraper.random.uniform", lambda a, b: 1.0)
+    assert _pre_reload_delay_s() == BROWSER_CONFIG["PRE_RELOAD_DELAY_S"] + 1.0
+
+
+class _FetchOncePage:
+    def __init__(self):
+        self.reloads = 0
+
+    def goto(self, *args, **kwargs):
+        pass
+
+    def reload(self, *args, **kwargs):
+        self.reloads += 1
+
+    def content(self):
+        return "<html></html>"
+
+
+class _FetchOnceSession:
+    def __init__(self, page):
+        self._page = page
+
+    def __enter__(self):
+        return self._page
+
+    def __exit__(self, *args):
+        return False
+
+
+def _stub_fetch_once(monkeypatch, page, limited_sequence):
+    import gmaps_review_filter.scraper as scraper_mod
+
+    monkeypatch.setattr(
+        scraper_mod, "ScrapeSession", lambda *a, **k: _FetchOnceSession(page)
+    )
+    monkeypatch.setattr(MapsScraper, "_wait_for_title", lambda self, p: None)
+    seq = list(limited_sequence)
+    monkeypatch.setattr(MapsScraper, "_is_limited_view", lambda self, p: seq.pop(0))
+    monkeypatch.setattr(MapsScraper, "_open_reviews_tab", lambda self, p: True)
+    monkeypatch.setattr(MapsScraper, "_scroll_reviews", lambda self, p: 5)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+
+def test_fetch_once_skips_reload_when_clean(monkeypatch):
+    page = _FetchOncePage()
+    _stub_fetch_once(monkeypatch, page, [False, False, False])
+    MapsScraper(PLACE)._fetch_once()
+    assert page.reloads == 0
+
+
+def test_fetch_once_reloads_only_when_limited(monkeypatch):
+    page = _FetchOncePage()
+    _stub_fetch_once(monkeypatch, page, [True, False, False, False])
+    MapsScraper(PLACE)._fetch_once()
+    assert page.reloads == 1
+
+
+# --- saved Google session (login flow, offline) ---
+
+
+def test_login_url_is_the_google_sign_in_page():
+    assert BROWSER_CONFIG["LOGIN_URL"].startswith("https://accounts.google.com/")
+
+
+def test_has_google_session_detects_auth_cookies():
+    assert has_google_session([{"name": "SID", "value": "abc"}])
+    assert has_google_session([{"name": "SAPISID", "value": "abc"}])
+    assert not has_google_session([{"name": "NID", "value": "abc"}])
+    assert not has_google_session([{"name": "SID", "value": ""}])
+    assert not has_google_session([])
+
+
+def test_resolve_auth_state_missing_file_is_none(tmp_path):
+    assert resolve_auth_state(str(tmp_path / "nope.json")) is None
+
+
+def test_resolve_auth_state_uses_explicit_path(tmp_path):
+    state = tmp_path / "auth.json"
+    state.write_text("{}", encoding="utf-8")
+    assert resolve_auth_state(str(state)) == str(state)
+
+
+def test_resolve_auth_state_falls_back_to_config(tmp_path, monkeypatch):
+    state = tmp_path / "auth.json"
+    state.write_text("{}", encoding="utf-8")
+    monkeypatch.setitem(BROWSER_CONFIG, "AUTH_STATE_PATH", str(state))
+    assert resolve_auth_state(None) == str(state)
+
+
+def test_save_storage_state_writes_owner_only_file(tmp_path):
+    target = tmp_path / "nested" / "auth.json"
+    saved = save_storage_state(_RecordingContext(), target)
+    assert saved == str(target)
+    assert target.read_text(encoding="utf-8") == "{}"
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+class _RecordingContext:
+    def storage_state(self, path):
+        Path(path).write_text("{}", encoding="utf-8")
+
+
+def test_load_storage_cookies_valid_file(tmp_path):
+    state = tmp_path / "auth.json"
+    cookies = [{"name": "SID", "value": "abc", "domain": ".google.com", "path": "/"}]
+    state.write_text(json.dumps({"cookies": cookies, "origins": []}), encoding="utf-8")
+    assert load_storage_cookies(state) == cookies
+
+
+def test_load_storage_cookies_bad_files_are_empty(tmp_path):
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("not json", encoding="utf-8")
+    assert load_storage_cookies(corrupt) == []
+    assert load_storage_cookies(tmp_path / "missing.json") == []
+    shape = tmp_path / "shape.json"
+    shape.write_text(json.dumps({"cookies": "nope"}), encoding="utf-8")
+    assert load_storage_cookies(shape) == []
+
+
+def test_scraper_passes_saved_state_to_session(tmp_path, monkeypatch):
+    state = tmp_path / "auth.json"
+    state.write_text("{}", encoding="utf-8")
+    seen = {}
+
+    class _CapturingSession(_FetchOnceSession):
+        def __init__(self, storage_state=None):
+            seen["state"] = storage_state
+            super().__init__(_FetchOncePage())
+
+    import gmaps_review_filter.scraper as scraper_mod
+
+    monkeypatch.setattr(scraper_mod, "ScrapeSession", _CapturingSession)
+    monkeypatch.setattr(MapsScraper, "_wait_for_title", lambda self, p: None)
+    monkeypatch.setattr(MapsScraper, "_is_limited_view", lambda self, p: False)
+    monkeypatch.setattr(MapsScraper, "_open_reviews_tab", lambda self, p: True)
+    monkeypatch.setattr(MapsScraper, "_scroll_reviews", lambda self, p: 5)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+    MapsScraper(PLACE, auth_state=str(state))._fetch_once()
+    assert seen["state"] == str(state)
 
 
 # --- selector registry ---

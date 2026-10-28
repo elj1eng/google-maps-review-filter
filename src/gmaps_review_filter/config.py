@@ -1,5 +1,6 @@
 """Tuning knobs: trust threshold, UI-matching locales, browser behavior."""
 
+from pathlib import Path
 from typing import TypedDict
 
 
@@ -47,6 +48,16 @@ class BrowserConfig(TypedDict):
     STABLE_TIMEOUT_S: int
     MIN_EXPECTED_REVIEWS: int
     FETCH_ATTEMPTS: int
+    POST_GOTO_SETTLE_S: float
+    PRE_RELOAD_DELAY_S: float
+    PRE_RELOAD_JITTER_S: float
+    RETRY_BASE_S: float
+    RETRY_CAP_S: float
+    RETRY_JITTER_S: float
+    AUTH_STATE_PATH: str
+    LOGIN_URL: str
+    LOGIN_TIMEOUT_S: int
+    LOGIN_POLL_S: float
     USER_AGENT: str
 
 
@@ -64,6 +75,19 @@ BROWSER_CONFIG: BrowserConfig = {
     "STABLE_TIMEOUT_S": 8,
     "MIN_EXPECTED_REVIEWS": 10,
     "FETCH_ATTEMPTS": 5,
+    "POST_GOTO_SETTLE_S": 2.0,
+    "PRE_RELOAD_DELAY_S": 2.0,
+    "PRE_RELOAD_JITTER_S": 2.0,
+    "RETRY_BASE_S": 5.0,
+    "RETRY_CAP_S": 30.0,
+    "RETRY_JITTER_S": 2.0,
+    # Saved Google session (Playwright storage_state JSON). Anonymous
+    # sessions get ~5 reviews behind a sign-in wall; --login writes this
+    # file. Per-user path, never committed (see .gitignore).
+    "AUTH_STATE_PATH": str(Path.home() / ".config" / "gmaps-filter" / "auth.json"),
+    "LOGIN_URL": "https://accounts.google.com/ServiceLogin?hl=en",
+    "LOGIN_TIMEOUT_S": 300,
+    "LOGIN_POLL_S": 2.0,
     "USER_AGENT": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"

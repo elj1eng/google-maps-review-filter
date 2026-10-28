@@ -17,3 +17,7 @@ Thumbs.db
 # Coverage
 .coverage
 coverage.xml
+
+# Saved Google session from `gmaps-filter --login` (never commit)
+auth.json
+.gmaps-auth/
