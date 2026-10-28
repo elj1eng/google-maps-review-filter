@@ -3,6 +3,7 @@ import logging
 import random
 import re
 import shutil
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -287,12 +288,8 @@ class MapsScraper:
         self.progress_enabled = progress_enabled
 
     def _make_progress(self, attempt, attempts):
-        """One bar per scrape attempt, labeled when retries are in play."""
-        label = (
-            "Loading reviews"
-            if attempts <= 1
-            else f"Attempt {attempt}/{attempts} — loading reviews"
-        )
+        """One bar per scrape attempt; short label so it fits on one line."""
+        label = "Loading reviews" if attempts <= 1 else f"Attempt {attempt}/{attempts}"
         enabled = None if self.progress_enabled else False
         return self.progress_factory(self.target, enabled=enabled, label=label)
 
@@ -322,17 +319,22 @@ class MapsScraper:
                 return html
             except TransientScrapeError as exc:
                 last_error = exc
-                logger.warning(
-                    "Attempt %d/%d: %s — retrying with a fresh session...",
-                    attempt,
-                    attempts,
-                    exc,
-                )
-                # Jittered exponential backoff (5s, 10s, 20s, 30s, 30s
-                # + 0-2s jitter) to ride out limited-view bursts instead
-                # of hammering Google on a fixed cadence.
                 if attempt < attempts:
+                    logger.warning(
+                        "Attempt %d/%d: %s — retrying with a fresh session...",
+                        attempt,
+                        attempts,
+                        exc,
+                    )
+                    # Visual boundary between attempts' progress output.
+                    print("----", file=sys.stderr)
+                    # Jittered backoff to ride out limited-view bursts
+                    # instead of hammering Google on a fixed cadence.
                     time.sleep(_retry_delay_s(attempt))
+                else:
+                    logger.warning(
+                        "Attempt %d/%d: %s — giving up.", attempt, attempts, exc
+                    )
         raise RuntimeError(
             f"Scrape failed after {attempts} attempts ({last_error}). Try again later."
         )
@@ -643,7 +645,16 @@ class MapsScraper:
                 logger.warning("Scrollable reviews pane not found.")
                 return 0
 
+            # Draw the first frame before scrolling begins, so the bar
+            # (and the attempt label) is visible as soon as the crawl
+            # starts instead of after the first batch lands.
+            try:
+                progress.update(page.locator(card_sel).count())
+            except Exception:
+                progress.update(0)
+
             no_change_count = 0
+            completion = None
             for i in range(BROWSER_CONFIG["SCROLL_LIMIT"]):
                 try:
                     prev_count = page.locator(card_sel).count()
@@ -652,8 +663,10 @@ class MapsScraper:
 
                 # Reached the desired sample size: done.
                 if prev_count >= target:
-                    logger.info(
-                        "Reached target: %d reviews (target %d).", prev_count, target
+                    completion = (
+                        "Reached target: %d reviews (target %d).",
+                        prev_count,
+                        target,
                     )
                     break
 
@@ -707,7 +720,7 @@ class MapsScraper:
                 if new_count == prev_count:
                     no_change_count += 1
                     if no_change_count >= stall_limit:
-                        logger.info(
+                        completion = (
                             "Scrolling done: %d reviews (stable for %d checks).",
                             new_count,
                             stall_limit,
@@ -725,8 +738,11 @@ class MapsScraper:
                 final = page.locator(card_sel).count()
             except Exception:
                 final = 0
+            # Close the bar line before any log: logging would otherwise
+            # append to the frame ("72/210 (34%)INFO: Scrolling done...").
             progress.finish()
-            logger.info("Finished scrolling: %d review cards in DOM.", final)
+            if completion is not None:
+                logger.info(*completion)
             min_expected = BROWSER_CONFIG["MIN_EXPECTED_REVIEWS"]
             if 0 < final < min_expected:
                 logger.warning(

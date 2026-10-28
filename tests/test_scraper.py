@@ -5,6 +5,7 @@ stubbing _fetch_once, and _locate is exercised with a fake page.
 """
 
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -211,6 +212,18 @@ def test_no_sleep_after_final_attempt(monkeypatch):
     with pytest.raises(RuntimeError):
         MapsScraper(PLACE).fetch_html()
     assert len(sleeps) == n - 1
+
+
+def test_final_attempt_does_not_claim_it_will_retry(monkeypatch, caplog):
+    n = BROWSER_CONFIG["FETCH_ATTEMPTS"]
+    _run_fetch(monkeypatch, [TransientScrapeError("x")] * n)
+    with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError):
+        MapsScraper(PLACE).fetch_html()
+    attempts_logged = [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("Attempt")
+    ]
+    assert "retrying with a fresh session" not in attempts_logged[-1]
+    assert "giving up" in attempts_logged[-1]
 
 
 def test_retry_delay_is_jittered_exponential(monkeypatch):
@@ -438,7 +451,7 @@ def test_scroll_reports_each_growth_then_finishes(monkeypatch):
     final = scraper._scroll_reviews(page)
     progress = _RecordingProgress.instances[-1]
     assert final == 210
-    assert progress.updates == [100, 210]
+    assert progress.updates == [0, 100, 210]
     assert progress.finished == 1
 
 
@@ -447,7 +460,7 @@ def test_scroll_finishes_without_drawing_when_it_stalls(monkeypatch):
     final = scraper._scroll_reviews(page)
     progress = _RecordingProgress.instances[-1]
     assert final == 50
-    assert progress.updates == [50]
+    assert progress.updates == [0, 50]
     assert progress.finished == 1
 
 
@@ -458,6 +471,85 @@ def test_missing_pane_finishes_cleanly(monkeypatch):
     progress = _RecordingProgress.instances[-1]
     assert progress.updates == []
     assert progress.finished == 1
+
+
+def test_retry_prints_separator_between_attempts(monkeypatch, capsys):
+    calls = _run_fetch(
+        monkeypatch,
+        [TransientScrapeError("a"), TransientScrapeError("b"), ("<html>", 5)],
+    )
+    assert MapsScraper(PLACE).fetch_html() == "<html>"
+    assert len(calls) == 3
+    err = capsys.readouterr().err
+    assert err.count("----") == 2
+
+
+def test_no_separator_when_first_attempt_succeeds(monkeypatch, capsys):
+    _run_fetch(monkeypatch, [("<html>", 5)])
+    MapsScraper(PLACE).fetch_html()
+    assert "----" not in capsys.readouterr().err
+
+
+def test_scroll_finishes_bar_before_completion_logs(monkeypatch):
+    """The bar line must be closed before 'Scrolling done' is logged.
+
+    Otherwise the log is appended mid-bar: '72/210 (34%)INFO: ...'.
+    """
+    import logging as logging_mod
+
+    scraper, page = _scroll_scraper(monkeypatch, [50, 0, 0, 0, 0, 0])
+    events = []
+
+    class _OrderedProgress(_RecordingProgress):
+        def finish(self):
+            if not self.finished:
+                events.append("finish")
+            super().finish()
+
+    class _Collector(logging_mod.Handler):
+        def emit(self, record):
+            events.append(record.getMessage())
+
+    scraper.progress_factory = _OrderedProgress
+    logger = logging_mod.getLogger("gmaps_review_filter.scraper")
+    collector = _Collector()
+    old_level = logger.level
+    logger.setLevel(logging_mod.INFO)
+    logger.addHandler(collector)
+    try:
+        scraper._scroll_reviews(page)
+    finally:
+        logger.removeHandler(collector)
+        logger.setLevel(old_level)
+
+    assert events.index("finish") < next(
+        i for i, e in enumerate(events) if e.startswith("Scrolling done")
+    )
+
+
+def test_scroll_does_not_log_redundant_finished_line(monkeypatch):
+    """The bar + 'Scrolling done' already state the count."""
+    import logging as logging_mod
+
+    scraper, page = _scroll_scraper(monkeypatch, [50, 0, 0, 0, 0, 0])
+    messages = []
+
+    class _Collector(logging_mod.Handler):
+        def emit(self, record):
+            messages.append(record.getMessage())
+
+    logger = logging_mod.getLogger("gmaps_review_filter.scraper")
+    collector = _Collector()
+    old_level = logger.level
+    logger.setLevel(logging_mod.INFO)
+    logger.addHandler(collector)
+    try:
+        scraper._scroll_reviews(page)
+    finally:
+        logger.removeHandler(collector)
+        logger.setLevel(old_level)
+
+    assert not any(m.startswith("Finished scrolling") for m in messages)
 
 
 def _progress_label_for(monkeypatch, attempt, attempts):
@@ -477,7 +569,7 @@ def _progress_label_for(monkeypatch, attempt, attempts):
 
 
 def test_progress_label_names_the_attempt(monkeypatch):
-    assert _progress_label_for(monkeypatch, 2, 5) == "Attempt 2/5 — loading reviews"
+    assert _progress_label_for(monkeypatch, 2, 5) == "Attempt 2/5"
     assert _progress_label_for(monkeypatch, 1, 1) == "Loading reviews"
 
 

@@ -31,10 +31,15 @@ class _PipeStream(_TtyStream):
         return False
 
 
-def _bar(*, total=210, width=20, label="Loading reviews", enabled=True):
+def _bar(*, total=210, width=20, label="Loading reviews", enabled=True, columns=200):
     stream = _TtyStream()
     return ReviewProgress(
-        total, stream=stream, width=width, label=label, enabled=enabled
+        total,
+        stream=stream,
+        width=width,
+        label=label,
+        enabled=enabled,
+        columns=columns,
     ), stream
 
 
@@ -42,8 +47,16 @@ def test_update_draws_count_percent_and_bar():
     progress, stream = _bar()
     progress.update(120)
     assert stream.text == (
-        f"\rLoading reviews [{FILLED * 11}{EMPTY * 9}] 120/210 (57%)"
+        f"\rLoading reviews [{FILLED * 11}{EMPTY * 9}] 120/210 (57%)\033[K"
     )
+
+
+def test_narrow_terminal_shrinks_the_bar_to_fit():
+    progress, stream = _bar(columns=50)
+    progress.update(120)
+    frame = stream.text.removeprefix("\r").removesuffix("\033[K")
+    assert len(frame) <= 49  # never wraps: wrapping breaks \r redraws
+    assert frame.endswith("120/210 (57%)")
 
 
 def test_update_is_deduplicated_per_count():
@@ -86,10 +99,10 @@ def test_finish_without_updates_is_silent():
 def test_count_above_total_clamps_to_full_bar():
     progress, stream = _bar()
     progress.update(300)
-    assert stream.text.endswith(f"[{FILLED * 20}] 300/210 (100%)")
+    assert stream.text.endswith(f"[{FILLED * 20}] 300/210 (100%)\033[K")
 
 
 def test_zero_total_never_divides_by_zero():
     progress, stream = _bar(total=0)
     progress.update(5)
-    assert stream.text.endswith(f"[{EMPTY * 20}] 5/0 (0%)")
+    assert stream.text.endswith(f"[{EMPTY * 20}] 5/0 (0%)\033[K")
