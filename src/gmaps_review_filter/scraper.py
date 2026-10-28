@@ -13,6 +13,7 @@ from playwright.sync_api import sync_playwright
 from gmaps_review_filter.analyzer import ReviewAnalyzer
 from gmaps_review_filter.config import BROWSER_CONFIG, LOCALE_STRINGS
 from gmaps_review_filter.errors import PermanentScrapeError, TransientScrapeError
+from gmaps_review_filter.progress import ReviewProgress
 from gmaps_review_filter.selectors import (
     CSS_SELECTORS,
     SCROLLABLE_PANE_CANDIDATES,
@@ -269,12 +270,31 @@ def _card_counter(page, card_sel):
 
 
 class MapsScraper:
-    def __init__(self, url, target_reviews=None, auth_state=None):
+    def __init__(
+        self,
+        url,
+        target_reviews=None,
+        auth_state=None,
+        progress_factory=None,
+        progress_enabled=True,
+    ):
         # Fail fast on non-place URLs: no browser is launched for them.
         self.url = validate_place_url(url)
         self.target = target_reviews or BROWSER_CONFIG["TARGET_REVIEWS"]
         # A saved sign-in lifts the ~5-review wall; absent file = anonymous.
         self.auth_state = resolve_auth_state(auth_state)
+        self.progress_factory = progress_factory or ReviewProgress
+        self.progress_enabled = progress_enabled
+
+    def _make_progress(self, attempt, attempts):
+        """One bar per scrape attempt, labeled when retries are in play."""
+        label = (
+            "Loading reviews"
+            if attempts <= 1
+            else f"Attempt {attempt}/{attempts} — loading reviews"
+        )
+        enabled = None if self.progress_enabled else False
+        return self.progress_factory(self.target, enabled=enabled, label=label)
 
     def fetch_html(self):
         """Scrape the reviews page.
@@ -288,7 +308,7 @@ class MapsScraper:
         last_error = None
         for attempt in range(1, attempts + 1):
             try:
-                html, loaded = self._fetch_once()
+                html, loaded = self._fetch_once(attempt, attempts)
                 # Stub guard: a 3-card sample from a 1006-review spot is a
                 # throttled stub, not a result — retry with a fresh session
                 # instead of reporting it silently.
@@ -317,7 +337,7 @@ class MapsScraper:
             f"Scrape failed after {attempts} attempts ({last_error}). Try again later."
         )
 
-    def _fetch_once(self):
+    def _fetch_once(self, attempt=1, attempts=1):
         with ScrapeSession(self.auth_state) as page:
             page.goto(self.url, wait_until="domcontentloaded")
             self._wait_for_title(page)
@@ -344,7 +364,11 @@ class MapsScraper:
             if opened and self._is_limited_view(page):
                 raise TransientScrapeError(LIMITED_VIEW_MSG)
 
-            loaded = self._scroll_reviews(page) if opened else 0
+            loaded = (
+                self._scroll_reviews(page, self._make_progress(attempt, attempts))
+                if opened
+                else 0
+            )
 
             if not opened or loaded == 0:
                 # Search-list page or a place without a rendered reviews
@@ -602,7 +626,7 @@ class MapsScraper:
             pass
         return False
 
-    def _scroll_reviews(self, page):
+    def _scroll_reviews(self, page, progress=None):
         logger.info("Scrolling review list dynamically...")
         card_sel = f".{CSS_SELECTORS['REVIEW_CARD']}"
         stall_limit = BROWSER_CONFIG["SCROLL_STALL_LIMIT"]
@@ -610,96 +634,106 @@ class MapsScraper:
         wait_ms = BROWSER_CONFIG["DYNAMIC_WAIT_MS"]
         wheel_px = BROWSER_CONFIG["SCROLL_WHEEL_PX"]
         target = self.target
-
-        pane = self._find_scrollable_pane(page)
-        if pane is None:
-            logger.warning("Scrollable reviews pane not found.")
-            return 0
-
-        no_change_count = 0
-        for i in range(BROWSER_CONFIG["SCROLL_LIMIT"]):
-            try:
-                prev_count = page.locator(card_sel).count()
-            except Exception:
-                prev_count = 0
-
-            # Reached the desired sample size: done.
-            if prev_count >= target:
-                logger.info(
-                    "Reached target: %d reviews (target %d).", prev_count, target
-                )
-                break
-
-            # Re-resolve the pane periodically, after stalls, or after
-            # failures: the DOM handle goes stale as Maps re-renders the
-            # list, and scrolling a stale pane silently does nothing.
-            if (i % 5 == 0 and i > 0) or no_change_count > 0:
-                try:
-                    pane = self._find_scrollable_pane(page) or pane
-                except Exception:
-                    pass
-
-            # 1) Trusted wheel input over the pane (primary trigger).
-            if not self._wheel_scroll(page, pane, wheel_px):
-                try:
-                    pane = self._find_scrollable_pane(page) or pane
-                    self._wheel_scroll(page, pane, wheel_px)
-                except Exception:
-                    pass
-
-            # 2) Fallbacks: keyboard End + bring the last card into view
-            # to wake lazy-load observers.
-            try:
-                page.keyboard.press("End")
-            except Exception:
-                pass
-            try:
-                cards = page.locator(card_sel)
-                if cards.count():
-                    cards.nth(cards.count() - 1).scroll_into_view_if_needed(
-                        timeout=2000
-                    )
-            except Exception:
-                pass
-
-            # 3) Wait for growth instead of a blind fixed sleep.
-            try:
-                page.wait_for_function(
-                    f"document.querySelectorAll('{card_sel}').length > {prev_count}",
-                    timeout=wait_ms,
-                )
-            except Exception:
-                time.sleep(sleep_s)
-
-            try:
-                new_count = page.locator(card_sel).count()
-            except Exception:
-                new_count = prev_count
-
-            if new_count == prev_count:
-                no_change_count += 1
-                if no_change_count >= stall_limit:
-                    logger.info(
-                        "Scrolling done: %d reviews (stable for %d checks).",
-                        new_count,
-                        stall_limit,
-                    )
-                    break
-            else:
-                no_change_count = 0
-                if (i + 1) % 10 == 0:
-                    logger.info("  ... loaded %d reviews so far", new_count)
+        if progress is None:
+            progress = self._make_progress(1, 1)
 
         try:
-            final = page.locator(card_sel).count()
-        except Exception:
-            final = 0
-        logger.info("Finished scrolling: %d review cards in DOM.", final)
-        min_expected = BROWSER_CONFIG["MIN_EXPECTED_REVIEWS"]
-        if 0 < final < min_expected:
-            logger.warning(
-                "Only %d reviews loaded (expected more). Page may have loaded "
-                "slowly or Maps rate-limited this run; try again.",
-                final,
-            )
-        return final
+            pane = self._find_scrollable_pane(page)
+            if pane is None:
+                logger.warning("Scrollable reviews pane not found.")
+                return 0
+
+            no_change_count = 0
+            for i in range(BROWSER_CONFIG["SCROLL_LIMIT"]):
+                try:
+                    prev_count = page.locator(card_sel).count()
+                except Exception:
+                    prev_count = 0
+
+                # Reached the desired sample size: done.
+                if prev_count >= target:
+                    logger.info(
+                        "Reached target: %d reviews (target %d).", prev_count, target
+                    )
+                    break
+
+                # Re-resolve the pane periodically, after stalls, or after
+                # failures: the DOM handle goes stale as Maps re-renders the
+                # list, and scrolling a stale pane silently does nothing.
+                if (i % 5 == 0 and i > 0) or no_change_count > 0:
+                    try:
+                        pane = self._find_scrollable_pane(page) or pane
+                    except Exception:
+                        pass
+
+                # 1) Trusted wheel input over the pane (primary trigger).
+                if not self._wheel_scroll(page, pane, wheel_px):
+                    try:
+                        pane = self._find_scrollable_pane(page) or pane
+                        self._wheel_scroll(page, pane, wheel_px)
+                    except Exception:
+                        pass
+
+                # 2) Fallbacks: keyboard End + bring the last card into view
+                # to wake lazy-load observers.
+                try:
+                    page.keyboard.press("End")
+                except Exception:
+                    pass
+                try:
+                    cards = page.locator(card_sel)
+                    if cards.count():
+                        cards.nth(cards.count() - 1).scroll_into_view_if_needed(
+                            timeout=2000
+                        )
+                except Exception:
+                    pass
+
+                # 3) Wait for growth instead of a blind fixed sleep.
+                try:
+                    page.wait_for_function(
+                        f"document.querySelectorAll('{card_sel}').length "
+                        f"> {prev_count}",
+                        timeout=wait_ms,
+                    )
+                except Exception:
+                    time.sleep(sleep_s)
+
+                try:
+                    new_count = page.locator(card_sel).count()
+                except Exception:
+                    new_count = prev_count
+
+                if new_count == prev_count:
+                    no_change_count += 1
+                    if no_change_count >= stall_limit:
+                        logger.info(
+                            "Scrolling done: %d reviews (stable for %d checks).",
+                            new_count,
+                            stall_limit,
+                        )
+                        break
+                else:
+                    no_change_count = 0
+                    progress.update(new_count)
+                    # When the bar owns the line, periodic logs would tear
+                    # it apart; they stay for piped/CI output.
+                    if (i + 1) % 10 == 0 and not progress.enabled:
+                        logger.info("  ... loaded %d reviews so far", new_count)
+
+            try:
+                final = page.locator(card_sel).count()
+            except Exception:
+                final = 0
+            progress.finish()
+            logger.info("Finished scrolling: %d review cards in DOM.", final)
+            min_expected = BROWSER_CONFIG["MIN_EXPECTED_REVIEWS"]
+            if 0 < final < min_expected:
+                logger.warning(
+                    "Only %d reviews loaded (expected more). Page may have loaded "
+                    "slowly or Maps rate-limited this run; try again.",
+                    final,
+                )
+            return final
+        finally:
+            progress.finish()

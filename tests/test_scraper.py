@@ -140,7 +140,7 @@ def test_wait_for_title_raises_permanent_not_runtime():
 def _run_fetch(monkeypatch, effects):
     calls = []
 
-    def fake_fetch(self):
+    def fake_fetch(self, *args, **kwargs):
         calls.append(1)
         effect = effects[len(calls) - 1]
         if isinstance(effect, Exception):
@@ -262,7 +262,9 @@ def _stub_fetch_once(monkeypatch, page, limited_sequence):
     seq = list(limited_sequence)
     monkeypatch.setattr(MapsScraper, "_is_limited_view", lambda self, p: seq.pop(0))
     monkeypatch.setattr(MapsScraper, "_open_reviews_tab", lambda self, p: True)
-    monkeypatch.setattr(MapsScraper, "_scroll_reviews", lambda self, p: 5)
+    monkeypatch.setattr(
+        MapsScraper, "_scroll_reviews", lambda self, p, progress=None: 5
+    )
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
 
@@ -358,11 +360,136 @@ def test_scraper_passes_saved_state_to_session(tmp_path, monkeypatch):
     monkeypatch.setattr(MapsScraper, "_wait_for_title", lambda self, p: None)
     monkeypatch.setattr(MapsScraper, "_is_limited_view", lambda self, p: False)
     monkeypatch.setattr(MapsScraper, "_open_reviews_tab", lambda self, p: True)
-    monkeypatch.setattr(MapsScraper, "_scroll_reviews", lambda self, p: 5)
+    monkeypatch.setattr(
+        MapsScraper, "_scroll_reviews", lambda self, p, progress=None: 5
+    )
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
     MapsScraper(PLACE, auth_state=str(state))._fetch_once()
     assert seen["state"] == str(state)
+
+
+# --- scroll progress policy (fake page, no browser) ---
+
+
+class _RecordingProgress:
+    instances = []
+
+    def __init__(self, total, *, enabled=None, label="Loading reviews"):
+        self.total = total
+        self.enabled = enabled
+        self.label = label
+        self.updates = []
+        self.finished = 0
+        _RecordingProgress.instances.append(self)
+
+    def update(self, loaded):
+        self.updates.append(loaded)
+
+    def finish(self):
+        # Mirrors ReviewProgress: finish is idempotent.
+        if self.finished:
+            return
+        self.finished += 1
+
+
+class _ScrollPage:
+    """Fake page whose card count grows inside wait_for_function."""
+
+    def __init__(self, growth):
+        self.current = 0
+        self._growth = list(growth)
+        self.keyboard = self
+
+    def locator(self, sel):
+        return self
+
+    def count(self):
+        return self.current
+
+    def nth(self, i):
+        return self
+
+    def scroll_into_view_if_needed(self, timeout=None):
+        pass
+
+    def wait_for_function(self, *args, **kwargs):
+        if self._growth:
+            self.current += self._growth.pop(0)
+
+    def press(self, key):
+        pass
+
+
+def _scroll_scraper(monkeypatch, growth, *, target=210):
+    page = _ScrollPage(growth)
+    monkeypatch.setattr(MapsScraper, "_find_scrollable_pane", lambda self, p: object())
+    monkeypatch.setattr(MapsScraper, "_wheel_scroll", lambda self, p, pane, px: True)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    _RecordingProgress.instances = []
+    scraper = MapsScraper(
+        PLACE, target_reviews=target, progress_factory=_RecordingProgress
+    )
+    return scraper, page
+
+
+def test_scroll_reports_each_growth_then_finishes(monkeypatch):
+    scraper, page = _scroll_scraper(monkeypatch, [100, 110])
+    final = scraper._scroll_reviews(page)
+    progress = _RecordingProgress.instances[-1]
+    assert final == 210
+    assert progress.updates == [100, 210]
+    assert progress.finished == 1
+
+
+def test_scroll_finishes_without_drawing_when_it_stalls(monkeypatch):
+    scraper, page = _scroll_scraper(monkeypatch, [50, 0, 0, 0, 0, 0])
+    final = scraper._scroll_reviews(page)
+    progress = _RecordingProgress.instances[-1]
+    assert final == 50
+    assert progress.updates == [50]
+    assert progress.finished == 1
+
+
+def test_missing_pane_finishes_cleanly(monkeypatch):
+    scraper, page = _scroll_scraper(monkeypatch, [])
+    monkeypatch.setattr(MapsScraper, "_find_scrollable_pane", lambda self, p: None)
+    assert scraper._scroll_reviews(page) == 0
+    progress = _RecordingProgress.instances[-1]
+    assert progress.updates == []
+    assert progress.finished == 1
+
+
+def _progress_label_for(monkeypatch, attempt, attempts):
+    page = _FetchOncePage()
+    _stub_fetch_once(monkeypatch, page, [False, False, False])
+    calls = []
+
+    class _Factory(_RecordingProgress):
+        def __init__(self, total, *, enabled=None, label="Loading reviews"):
+            calls.append(label)
+            super().__init__(total, enabled=enabled, label=label)
+
+    _RecordingProgress.instances = []
+    scraper = MapsScraper(PLACE, progress_factory=_Factory)
+    scraper._fetch_once(attempt, attempts)
+    return calls[-1]
+
+
+def test_progress_label_names_the_attempt(monkeypatch):
+    assert _progress_label_for(monkeypatch, 2, 5) == "Attempt 2/5 — loading reviews"
+    assert _progress_label_for(monkeypatch, 1, 1) == "Loading reviews"
+
+
+def test_progress_disabled_flag_is_forwarded(monkeypatch):
+    page = _FetchOncePage()
+    _stub_fetch_once(monkeypatch, page, [False, False, False])
+    _RecordingProgress.instances = []
+    scraper = MapsScraper(
+        PLACE, progress_factory=_RecordingProgress, progress_enabled=False
+    )
+    scraper._fetch_once()
+    assert _RecordingProgress.instances[-1].enabled is False
 
 
 # --- selector registry ---

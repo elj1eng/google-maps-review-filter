@@ -92,6 +92,11 @@ Options:
 
 Exit codes: `0` success, `1` scrape/analysis failure, `2` bad URL.
 
+While reviews load, a single-line progress bar (`Loading reviews [███░░░] 120/210 (57%)`)
+is redrawn on stderr each time another batch arrives. It appears only when
+stderr is a TTY, restarts per retry attempt, and is replaced with periodic log
+lines under `--verbose` or when output is piped (`--json` output stays clean).
+
 ### Signed-in sessions (`--login`)
 
 Google truncates anonymous Maps sessions to ~5 reviews behind a sign-in

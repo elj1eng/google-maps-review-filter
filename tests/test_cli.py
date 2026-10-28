@@ -115,6 +115,34 @@ def test_parser_login_and_auth():
     assert args.auth_state == "session.json"
 
 
+def test_verbose_disables_progress_bar(capsys):
+    seen = {}
+
+    class FakeScraper:
+        def __init__(self, url, target_reviews=None, progress_enabled=True):
+            seen["progress_enabled"] = progress_enabled
+
+        def fetch_html(self):
+            return (FIXTURES / "restaurant.html").read_text(encoding="utf-8")
+
+    assert _run(factory=FakeScraper, verbose=True) == 0
+    assert seen["progress_enabled"] is False
+
+
+def test_default_run_keeps_progress_bar(capsys):
+    seen = {}
+
+    class FakeScraper:
+        def __init__(self, url, target_reviews=None):
+            seen["kwargs"] = "no progress flag"
+
+        def fetch_html(self):
+            return (FIXTURES / "restaurant.html").read_text(encoding="utf-8")
+
+    assert _run(factory=FakeScraper) == 0
+    assert seen["kwargs"] == "no progress flag"
+
+
 def test_login_saves_state_and_exits_ok(monkeypatch, capsys):
     monkeypatch.setattr(main, "login_and_save_state", lambda path: "/saved/auth.json")
     assert main.main(["--login"]) == 0

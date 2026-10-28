@@ -164,6 +164,7 @@ def run_once(
     trust_threshold: int,
     as_json: bool,
     auth_state: str | None = None,
+    verbose: bool = False,
     scraper_factory: ScraperFactory = MapsScraper,
 ) -> int:
     """Scrape and report one URL. Returns a process exit code.
@@ -181,6 +182,7 @@ def run_once(
             trust_threshold=trust_threshold,
             as_json=as_json,
             auth_state=auth_state,
+            verbose=verbose,
             scraper_factory=scraper_factory,
         )
     finally:
@@ -194,6 +196,7 @@ def _scrape_and_report(
     trust_threshold: int,
     as_json: bool,
     auth_state: str | None,
+    verbose: bool,
     scraper_factory: ScraperFactory,
 ) -> int:
     print("Validating URL...", file=sys.stderr)
@@ -203,6 +206,9 @@ def _scrape_and_report(
         kwargs: dict[str, Any] = {"target_reviews": target}
         if auth_state:
             kwargs["auth_state"] = auth_state
+        if verbose:
+            # Debug logs and a redrawn bar share stderr; keep the logs.
+            kwargs["progress_enabled"] = False
         html_content = scraper_factory(url, **kwargs).fetch_html()
     except PermanentScrapeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -238,6 +244,7 @@ def main(argv: list[str] | None = None) -> int:
         "trust_threshold": args.trust_threshold,
         "as_json": args.json,
         "auth_state": args.auth_state,
+        "verbose": args.verbose,
     }
     if args.login:
         print("Opening a browser window to sign in to Google...", file=sys.stderr)
