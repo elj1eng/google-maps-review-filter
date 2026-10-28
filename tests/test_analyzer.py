@@ -54,6 +54,50 @@ def test_summary_restaurant():
     }
 
 
+def test_summary_name_ignores_navigation_rail_recents():
+    """A signed-in session adds a Recents rail listing prior spots.
+
+    Its buttons share data-bundle-id with the place header, and it comes
+    first in the DOM, so the first-match lookup returned the previously
+    scraped spot on every later scrape. The document title is authoritative.
+    """
+    html = """
+    <html><head><title>Brisnie Matcha - Google Maps</title></head><body>
+    <div class="rail"><ul>
+      <li><button data-bundle-id="Ho Chi Minh City"
+                  jsaction="click:navigationrail.bundle">
+        <div class="cGRe9e">Ho Chi Minh City</div></button></li>
+      <li><button data-bundle-id="Marina Bay Sands Singapore"
+                  jsaction="click:navigationrail.bundle">
+        <div class="cGRe9e">Marina Bay Sands Singapore</div></button></li>
+    </ul></div>
+    </body></html>
+    """
+    assert ReviewAnalyzer(html).get_spot_summary()["name"] == "Brisnie Matcha"
+
+
+def test_summary_name_skips_nav_buttons_without_title():
+    html = """
+    <html><body>
+    <div class="rail"><ul><li>
+      <button data-bundle-id="Old Spot" jsaction="click:navigationrail.bundle">
+        <div class="cGRe9e">Old Spot</div></button>
+    </li></ul></div>
+    <button data-bundle-id="Real Spot"><div class="cGRe9e">Real Spot</div></button>
+    </body></html>
+    """
+    assert ReviewAnalyzer(html).get_spot_summary()["name"] == "Real Spot"
+
+
+def test_summary_generic_title_falls_back_to_header():
+    html = """
+    <html><head><title>Google Maps</title></head><body>
+    <button data-bundle-id="Real Spot"><div class="cGRe9e">Real Spot</div></button>
+    </body></html>
+    """
+    assert ReviewAnalyzer(html).get_spot_summary()["name"] == "Real Spot"
+
+
 def test_summary_missing_header_defaults():
     assert ReviewAnalyzer("<html><body></body></html>").get_spot_summary() == {
         "rating": "N/A",

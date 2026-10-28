@@ -37,18 +37,41 @@ class ReviewAnalyzer:
             else THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]
         )
 
+    def _place_name(self) -> str:
+        """Current place name, never a previously viewed one.
+
+        The signed-in navigation rail ("Recents") renders buttons with the
+        same data-bundle-id as the place header and precedes it in the DOM;
+        a plain first-match lookup therefore returned the last spot
+        scraped. The document title names the current place, so use it
+        first, and skip nav-rail buttons on fallback.
+        """
+        title = self.soup.title.get_text(strip=True) if self.soup.title else ""
+        if title and title != "Google Maps":
+            suffix = " - Google Maps"
+            if title.endswith(suffix):
+                title = title[: -len(suffix)].strip()
+            if title:
+                return title
+
+        for button in self.soup.find_all("button", attrs={"data-bundle-id": True}):
+            # Recents entries live in a <ul>/<li> rail; the place header
+            # does not. (Both carry the same navigationrail jsaction.)
+            if button.find_parent(["ul", "li"]) is not None:
+                continue
+            name_el = button.find("div", class_=re.compile(CSS_SELECTORS["PLACE_NAME"]))
+            if name_el:
+                text = name_el.get_text().strip()
+                if text:
+                    return text
+        return "Unknown Place"
+
     def get_spot_summary(self) -> SpotSummary:
         summary: SpotSummary = {
             "rating": "N/A",
             "total": "N/A",
-            "name": "Unknown Place",
+            "name": self._place_name(),
         }
-
-        button = self.soup.find("button", attrs={"data-bundle-id": True})
-        if button:
-            name_el = button.find("div", class_=re.compile(CSS_SELECTORS["PLACE_NAME"]))
-            if name_el:
-                summary["name"] = name_el.get_text().strip()
 
         header = self.soup.find("div", class_=re.compile(CSS_SELECTORS["SPOT_HEADER"]))
         if header:
