@@ -95,14 +95,32 @@ Options:
 
 Exit codes: `0` success, `1` scrape/analysis failure, `2` bad URL.
 
+Human output is colored only when stdout is a TTY; piped output and
+`NO_COLOR=1` are plain text. `--json` emits schema v1:
+
+```json
+{
+  "schema_version": 1,
+  "source": { "url": "<input URL>", "requested_target": 210 },
+  "place": { "name": "The Ritz London", "rating": 4.6, "total_reviews": 7904 },
+  "sample": { "size": 210, "classified": 210, "unrated": 0 },
+  "trust": { "threshold": 10, "trusted": 154, "filtered": 56, "ratio": 0.7333 },
+  "ratings": { "all": 4.38, "trusted": 4.44 }
+}
+```
+
+Unparseable header facts are `null`, never `"N/A"`; `trust.ratio` is `null`
+when no card could be classified.
+
 While reviews load, a single-line progress bar (`Loading reviews [███░░░] 120/210 (57%)`)
 is drawn on stderr as soon as scrolling starts and redrawn each time another
 batch arrives. It appears only when stderr is a TTY and fits the terminal width
 (so the redraw never wraps). Setup chatter (`Validating URL...`,
 `Initializing scraper...`) is hidden and completion logs are suppressed while
 the bar owns the line, leaving just the bar; a dash rule (up to 60 columns)
-separates retry attempts and consecutive spots in the interactive loop. Under `--verbose` or piped output the bar is replaced
-with the usual log lines (`--json` stdout stays clean either way).
+separates retry attempts and consecutive spots in the interactive loop. Under
+`--verbose` or piped output the bar is replaced with the usual log lines
+(`--json` stdout stays clean either way).
 
 ### Signed-in sessions (`--login`)
 

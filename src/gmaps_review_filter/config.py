@@ -13,7 +13,7 @@ THRESHOLDS: Thresholds = {
 }
 
 # Human-language strings for UI matching. The review-count pattern in
-# analyzer.REVIEW_COUNT_RE already covers en+vi; this table covers the
+# parsing.REVIEW_COUNT_RE already covers en+vi; this table covers the
 # scraper's tab/chip/option matching. Provider names ("Google") are proper
 # nouns and match case-insensitively in every locale. "vi" entries are
 # best-effort: keywords fall back to English where Maps keeps English

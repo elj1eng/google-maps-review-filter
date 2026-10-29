@@ -1,40 +1,85 @@
+"""BeautifulSoup parsing of a scraped Google Maps page.
+
+The analyzer is a thin, offline layer over the same markup the scraper
+navigates: it turns HTML into immutable :mod:`models` records. No browser
+and no network, so it is fully testable against golden fixtures.
+"""
+
 import re
-from typing import TypedDict
 
 from bs4 import BeautifulSoup, Tag
 
 from gmaps_review_filter.config import THRESHOLDS
+from gmaps_review_filter.models import PlaceSummary, ReviewReport
+from gmaps_review_filter.parsing import (
+    parse_rating_text,
+    parse_review_count,
+    parse_star_rating,
+)
 from gmaps_review_filter.selectors import CSS_SELECTORS
-
-REVIEW_COUNT_RE = re.compile(r"(\d[\d,]*)\s*(?:reviews?|đánh giá)", re.IGNORECASE)
-
-
-class SpotSummary(TypedDict):
-    """Spot header facts; "N/A"/"Unknown Place" when unparseable."""
-
-    rating: str
-    total: str
-    name: str
-
-
-class ReviewReport(TypedDict):
-    """Trusted/filtered split over one loaded sample."""
-
-    total_scanned: int
-    filtered_count: int
-    trusted_count: int
-    trusted_avg: float
-    all_avg: float
-    no_rating_count: int
 
 
 class ReviewAnalyzer:
+    """Parse one page's place header and review cards."""
+
     def __init__(self, html: str, trust_limit: int | None = None):
         self.soup = BeautifulSoup(html, "html.parser")
         self.limit: int = (
             trust_limit
             if trust_limit is not None
             else THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]
+        )
+        self._place: PlaceSummary | None = None
+
+    def place(self) -> PlaceSummary:
+        """Header facts; cached because both the CLI and the stub guard need them."""
+        if self._place is None:
+            self._place = self._parse_place()
+        return self._place
+
+    def report(self) -> ReviewReport | None:
+        """Trusted/filtered split, or None when the page has no review cards."""
+        cards = self.soup.find_all(
+            "div", class_=re.compile(CSS_SELECTORS["REVIEW_CARD"])
+        )
+        if not cards:
+            return None
+
+        rated: list[tuple[int, float]] = []
+        for card in cards:
+            rating = self._star_rating(card)
+            if rating is not None:
+                rated.append((self._reviewer_count(card), rating))
+
+        trusted = [rating for count, rating in rated if count > self.limit]
+        filtered = [rating for count, rating in rated if count <= self.limit]
+        return ReviewReport(
+            total_scanned=len(cards),
+            filtered_count=len(filtered),
+            trusted_count=len(trusted),
+            trusted_avg=_average(trusted),
+            all_avg=_average([rating for _, rating in rated]),
+            no_rating_count=len(cards) - len(rated),
+        )
+
+    def _parse_place(self) -> PlaceSummary:
+        name = self._place_name()
+        header = self.soup.find("div", class_=re.compile(CSS_SELECTORS["SPOT_HEADER"]))
+        if header is None:
+            return PlaceSummary(name=name)
+
+        rating_el = header.find("div", class_=re.compile(CSS_SELECTORS["RATING_VALUE"]))
+        total_el = header.find("div", class_=re.compile(CSS_SELECTORS["TOTAL_REVIEWS"]))
+        return PlaceSummary(
+            name=name,
+            rating=(
+                parse_star_rating(rating_el.get_text(strip=True)) if rating_el else None
+            ),
+            total_reviews=(
+                parse_review_count(total_el.get_text(" ", strip=True))
+                if total_el
+                else None
+            ),
         )
 
     def _place_name(self) -> str:
@@ -66,92 +111,26 @@ class ReviewAnalyzer:
                     return text
         return "Unknown Place"
 
-    def get_spot_summary(self) -> SpotSummary:
-        summary: SpotSummary = {
-            "rating": "N/A",
-            "total": "N/A",
-            "name": self._place_name(),
-        }
-
-        header = self.soup.find("div", class_=re.compile(CSS_SELECTORS["SPOT_HEADER"]))
-        if header:
-            rating_el = header.find(
-                "div", class_=re.compile(CSS_SELECTORS["RATING_VALUE"])
-            )
-            if rating_el:
-                summary["rating"] = rating_el.get_text().strip()
-            total_el = header.find(
-                "div", class_=re.compile(CSS_SELECTORS["TOTAL_REVIEWS"])
-            )
-            if total_el:
-                # Anchor to the "reviews" label so an unrelated leading
-                # number in the header can never be mistaken for the total.
-                match = REVIEW_COUNT_RE.search(total_el.get_text(" ", strip=True))
-                if match:
-                    summary["total"] = match.group(1).replace(",", "")
-
-        return summary
-
-    def analyze_reviews(self) -> ReviewReport | None:
-        cards = self.soup.find_all(
-            "div", class_=re.compile(CSS_SELECTORS["REVIEW_CARD"])
-        )
-
-        all_ratings: list[dict[str, int | float]] = []
-        for card in cards:
-            count = self._reviewer_count(card)
-            rating = self._star_rating(card)
-            if rating is not None:
-                all_ratings.append({"count": count, "rating": rating})
-
-        total = len(cards)
-        if total == 0:
-            return None
-
-        trusted = [r for r in all_ratings if r["count"] > self.limit]
-        filtered_out = [r for r in all_ratings if r["count"] <= self.limit]
-
-        return {
-            "total_scanned": total,
-            "filtered_count": len(filtered_out),
-            "trusted_count": len(trusted),
-            "trusted_avg": _average([r["rating"] for r in trusted]),
-            "all_avg": _average([r["rating"] for r in all_ratings]),
-            "no_rating_count": total - len(all_ratings),
-        }
-
     def _reviewer_count(self, card: Tag) -> int:
         meta = card.find("div", class_=re.compile(CSS_SELECTORS["METADATA"]))
-        if not meta:
+        if meta is None:
             return 0
-        match = REVIEW_COUNT_RE.search(meta.get_text(" ", strip=True))
-        if not match:
-            return 0
-        # Safe without try/except: the regex admits only digits and commas.
-        return int(match.group(1).replace(",", ""))
+        return parse_review_count(meta.get_text(" ", strip=True)) or 0
 
     def _star_rating(self, card: Tag) -> float | None:
         for span in card.find_all("span", attrs={"role": "img"}):
             label = span.get("aria-label")
-            if not isinstance(label, str):
-                continue
-            match = re.search(r"(\d+[,.]?\d*)", label)
-            if match:
-                # Safe: the regex admits only digits with one optional
-                # decimal separator.
-                rating = float(match.group(1).replace(",", "."))
-                if 1 <= rating <= 5:
+            if isinstance(label, str):
+                rating = parse_star_rating(label)
+                if rating is not None:
                     return rating
         # Hotel cards render the rating as "N/5" text instead of star icons.
         for span in card.find_all(
             "span", class_=re.compile(CSS_SELECTORS["RATING_TEXT"])
         ):
-            match = re.fullmatch(r"\s*(\d(?:[,.]\d)?)\s*/\s*5\s*", span.get_text())
-            if match:
-                # Safe: single digit with one optional decimal always parses.
-                rating = float(match.group(1).replace(",", "."))
-                if 1 <= rating <= 5:
-                    return rating
+            rating = parse_rating_text(span.get_text())
+            if rating is not None:
+                return rating
         return None
 
 

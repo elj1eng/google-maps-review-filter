@@ -56,17 +56,22 @@ def test_fixed_spot_report(url, expected_name, capsys):
     assert code == EXIT_OK, f"{expected_name}: scrape failed\n{err}"
     data = json.loads(out)
 
-    assert data["name"] == expected_name
-    assert data["trust_threshold"] == TRUST_LIMIT
-    assert isinstance(data["total_reviews"], str) and data["total_reviews"].isdigit()
-    total = int(data["total_reviews"])
-    assert total > 0
+    assert data["schema_version"] == 1
+    assert data["source"]["url"] == url
+    assert data["source"]["requested_target"] == LIVE_TARGET
+    assert data["place"]["name"] == expected_name
+    assert data["trust"]["threshold"] == TRUST_LIMIT
+    total = data["place"]["total_reviews"]
+    assert isinstance(total, int) and total > 0
     # fetch_html's stub guard already rejects short samples, so a
     # successful run must hold the full min(target, total) sample.
-    assert data["sample"] == min(LIVE_TARGET, total)
-    assert data["filtered_count"] + data["trusted_count"] <= data["sample"]
-    assert data["unparseable_count"] >= 0
-    if data["trusted_ratio"] is not None:
-        assert 0.0 <= data["trusted_ratio"] <= 1.0
-    assert 0.0 <= data["all_avg"] <= 5.0
-    assert 0.0 <= data["trusted_avg"] <= 5.0
+    assert data["sample"]["size"] == min(LIVE_TARGET, total)
+    assert data["sample"]["classified"] <= data["sample"]["size"]
+    assert data["sample"]["unrated"] >= 0
+    assert (
+        data["trust"]["filtered"] + data["trust"]["trusted"] <= data["sample"]["size"]
+    )
+    if data["trust"]["ratio"] is not None:
+        assert 0.0 <= data["trust"]["ratio"] <= 1.0
+    assert 0.0 <= data["ratings"]["all"] <= 5.0
+    assert 0.0 <= data["ratings"]["trusted"] <= 5.0

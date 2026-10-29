@@ -1,14 +1,16 @@
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Any, Protocol
 
-from gmaps_review_filter.analyzer import ReviewAnalyzer, ReviewReport, SpotSummary
+from gmaps_review_filter.analyzer import ReviewAnalyzer
 from gmaps_review_filter.config import BROWSER_CONFIG, THRESHOLDS
 from gmaps_review_filter.errors import PermanentScrapeError
+from gmaps_review_filter.report import format_human, to_dict
 from gmaps_review_filter.scraper import (
     MapsScraper,
     _attempt_separator,
@@ -93,61 +95,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def report_to_dict(
-    summary: SpotSummary, report: ReviewReport, limit: int
-) -> dict[str, Any]:
-    total_classified = report["filtered_count"] + report["trusted_count"]
-    return {
-        "name": summary["name"],
-        "rating": summary["rating"],
-        "total_reviews": summary["total"],
-        "sample": report["total_scanned"],
-        "trust_threshold": limit,
-        "filtered_count": report["filtered_count"],
-        "trusted_count": report["trusted_count"],
-        "trusted_ratio": (
-            report["trusted_count"] / total_classified if total_classified else None
-        ),
-        "all_avg": report["all_avg"],
-        "trusted_avg": report["trusted_avg"],
-        "unparseable_count": report["no_rating_count"],
-    }
-
-
-def format_human(summary: SpotSummary, report: ReviewReport, limit: int) -> str:
-    green = "\033[32m"
-    red = "\033[31m"
-    reset = "\033[0m"
-    n_filt = report["filtered_count"]
-    n_trust = report["trusted_count"]
-    n_bad = report["no_rating_count"]
-    n_classified = n_filt + n_trust
-    ratio = f"{n_trust / n_classified * 100:.1f}%" if n_classified else "N/A"
-    unparseable = (
-        f"{red}Warning: {n_bad} cards had no parseable "
-        f"rating (markup may have changed).{reset}"
-        if n_bad
-        else ""
-    )
-    parts = [
-        "",
-        summary["name"],
-        f"Rating: {summary['rating']} ({summary['total']})",
-        "",
-        f"--- ANALYSIS (Sample: {report['total_scanned']} reviews) ---",
-        f"{red}Filtered out (<= {limit} reviews): {n_filt}{reset}",
-        f"Trusted reviewers (> {limit} reviews): {n_trust}",
-        f"{green}Trusted review ratio: {ratio}{reset}",
-    ]
-    if unparseable:
-        parts += ["", unparseable]
-    parts += [
-        "",
-        f"Average rating (all): {report['all_avg']:.2f} / 5",
-        f"{green}Average rating (trusted only): {report['trusted_avg']:.2f} / 5{reset}",
-        "",
-    ]
-    return "\n".join(parts)
+def _use_color() -> bool:
+    """ANSI only for an interactive stdout that has not opted out."""
+    if os.environ.get("NO_COLOR"):
+        return False
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
 
 
 def _auth_hint(auth_state: str | None) -> None:
@@ -248,17 +203,24 @@ def _scrape_and_report(
         return EXIT_SCRAPE_FAILED
 
     analyzer = ReviewAnalyzer(html_content, trust_limit=trust_threshold)
-    summary = analyzer.get_spot_summary()
-    report = analyzer.analyze_reviews()
+    place = analyzer.place()
+    report = analyzer.report()
 
     if report is None:
         print("Warning: No review cards found.", file=sys.stderr)
         return EXIT_SCRAPE_FAILED
 
     if as_json:
-        print(json.dumps(report_to_dict(summary, report, trust_threshold), indent=2))
+        payload = to_dict(
+            place,
+            report,
+            source_url=url,
+            requested_target=target,
+            trust_threshold=trust_threshold,
+        )
+        print(json.dumps(payload, indent=2))
     else:
-        print(format_human(summary, report, trust_threshold))
+        print(format_human(place, report, trust_threshold, color=_use_color()))
     return EXIT_OK
 
 

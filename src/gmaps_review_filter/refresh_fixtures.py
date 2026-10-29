@@ -62,7 +62,7 @@ def main():
         html = MapsScraper(url).fetch_html()
         doc = trim(html, url, indices)
         (OUT / name).write_text(doc, encoding="utf-8")
-        rep = ReviewAnalyzer(doc).analyze_reviews()
+        rep = ReviewAnalyzer(doc).report()
         print(f"wrote {name} ({len(doc)} bytes): {rep}", flush=True)
         time.sleep(15)
     print("done: update frozen assertions in tests/test_analyzer.py to match")

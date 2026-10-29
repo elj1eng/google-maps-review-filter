@@ -11,9 +11,10 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-from gmaps_review_filter.analyzer import REVIEW_COUNT_RE, ReviewAnalyzer
+from gmaps_review_filter.analyzer import ReviewAnalyzer
 from gmaps_review_filter.config import BROWSER_CONFIG, LOCALE_STRINGS
 from gmaps_review_filter.errors import PermanentScrapeError, TransientScrapeError
+from gmaps_review_filter.parsing import parse_review_count
 from gmaps_review_filter.progress import ReviewProgress
 from gmaps_review_filter.selectors import (
     CSS_SELECTORS,
@@ -315,8 +316,7 @@ class MapsScraper:
                 # Stub guard: a 3-card sample from a 1006-review spot is a
                 # throttled stub, not a result — retry with a fresh session
                 # instead of reporting it silently.
-                total_raw = ReviewAnalyzer(html).get_spot_summary()["total"]
-                total = int(total_raw) if total_raw.isdigit() else None
+                total = ReviewAnalyzer(html).place().total_reviews
                 if is_throttled_stub(loaded, self.target, total):
                     raise TransientScrapeError(
                         f"loaded only {loaded} of {total} total reviews — "
@@ -650,13 +650,7 @@ class MapsScraper:
             text = total_loc.first.inner_text(timeout=2000)
         except Exception:
             return None
-        match = REVIEW_COUNT_RE.search(text)
-        if not match:
-            return None
-        try:
-            return int(match.group(1).replace(",", ""))
-        except ValueError:
-            return None
+        return parse_review_count(text)
 
     def _scroll_reviews(self, page, progress=None):
         card_sel = f".{CSS_SELECTORS['REVIEW_CARD']}"

@@ -7,12 +7,7 @@ import re
 import sys
 
 import gmaps_review_filter.cli as main
-from gmaps_review_filter.cli import (
-    build_parser,
-    format_human,
-    report_to_dict,
-    run_once,
-)
+from gmaps_review_filter.cli import build_parser, run_once
 from gmaps_review_filter.config import BROWSER_CONFIG
 from gmaps_review_filter.scraper import (
     MapsScraper,
@@ -21,43 +16,6 @@ from gmaps_review_filter.scraper import (
     detect_lang,
 )
 from tests.test_analyzer import FIXTURES
-
-SUMMARY = {"name": "Test Spot", "rating": "4.5", "total": "1250"}
-FULL_REPORT = {
-    "total_scanned": 10,
-    "filtered_count": 3,
-    "trusted_count": 7,
-    "trusted_avg": 4.5,
-    "all_avg": 4.3,
-    "no_rating_count": 0,
-}
-
-
-def test_report_to_dict_shape():
-    d = report_to_dict(SUMMARY, FULL_REPORT, 10)
-    assert d["name"] == "Test Spot"
-    assert d["sample"] == 10
-    assert d["trust_threshold"] == 10
-    assert d["trusted_ratio"] == 0.7
-    assert d["unparseable_count"] == 0
-
-
-def test_report_to_dict_ratio_none_when_nothing_classified():
-    empty = dict(FULL_REPORT, filtered_count=0, trusted_count=0)
-    assert report_to_dict(SUMMARY, empty, 10)["trusted_ratio"] is None
-
-
-def test_format_human_shows_na_ratio_and_unparseable_warning():
-    report = dict(FULL_REPORT, filtered_count=0, trusted_count=0, no_rating_count=4)
-    out = format_human(SUMMARY, report, 10)
-    assert "N/A" in out
-    assert "4 cards had no parseable rating" in out
-
-
-def test_format_human_clean_report_has_no_warning():
-    out = format_human(SUMMARY, FULL_REPORT, 10)
-    assert "70.0%" in out
-    assert "parseable" not in out
 
 
 def test_parser_defaults():
@@ -326,8 +284,8 @@ def test_run_once_json_stdout_is_pure_json(monkeypatch, capsys):
     assert code == 0
     out, err = capsys.readouterr()
     data = json.loads(out)
-    assert data["sample"] == 4
-    assert data["trust_threshold"] == 10
+    assert data["sample"]["size"] == 4
+    assert data["trust"]["threshold"] == 10
     assert "Validating" in err
 
 
@@ -359,7 +317,7 @@ def test_run_once_uses_injected_factory_not_maps_scraper(monkeypatch, capsys):
     code = _run(factory=_fixture_factory("restaurant.html"))
     assert code == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["sample"] == 4
+    assert data["sample"]["size"] == 4
 
 
 def test_run_once_permanent_error_exits_bad_url(monkeypatch, capsys):
