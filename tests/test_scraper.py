@@ -575,7 +575,7 @@ def test_piped_mode_keeps_setup_and_completion_logs(monkeypatch, caplog):
 
 def _fake_terminal(monkeypatch, columns):
     monkeypatch.setattr(
-        "gmaps_review_filter.scraper.shutil.get_terminal_size",
+        "gmaps_review_filter.ui.shutil.get_terminal_size",
         lambda fallback=None: os.terminal_size((columns, 24)),
     )
 

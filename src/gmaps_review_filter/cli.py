@@ -11,11 +11,8 @@ from gmaps_review_filter.analyzer import ReviewAnalyzer
 from gmaps_review_filter.config import BROWSER_CONFIG, THRESHOLDS
 from gmaps_review_filter.errors import PermanentScrapeError
 from gmaps_review_filter.report import format_human, to_dict
-from gmaps_review_filter.scraper import (
-    MapsScraper,
-    _attempt_separator,
-    login_and_save_state,
-)
+from gmaps_review_filter.scraper import MapsScraper, login_and_save_state
+from gmaps_review_filter.ui import Terminal
 
 EXIT_OK = 0
 EXIT_SCRAPE_FAILED = 1
@@ -105,14 +102,13 @@ def _use_color() -> bool:
         return False
 
 
-def _auth_hint(auth_state: str | None) -> None:
+def _auth_hint(auth_state: str | None, terminal: Terminal) -> None:
     """Tell the user once when scraping anonymously (5-review wall)."""
     path = Path(auth_state or BROWSER_CONFIG["AUTH_STATE_PATH"]).expanduser()
     if not path.is_file():
-        print(
+        terminal.write(
             f"Note: no saved Google session at {path}; anonymous runs only "
-            "see ~5 reviews. Run --login to save one.",
-            file=sys.stderr,
+            "see ~5 reviews. Run --login to save one."
         )
 
 
@@ -125,6 +121,7 @@ def run_once(
     auth_state: str | None = None,
     verbose: bool = False,
     scraper_factory: ScraperFactory = MapsScraper,
+    terminal: Terminal | None = None,
 ) -> int:
     """Scrape and report one URL. Returns a process exit code.
 
@@ -133,6 +130,7 @@ def run_once(
     tests (must accept (url, target_reviews=...) like MapsScraper).
     Wall-clock processing time is reported on stderr on every path.
     """
+    term = terminal or Terminal()
     started = time.monotonic()
     try:
         return _scrape_and_report(
@@ -143,12 +141,13 @@ def run_once(
             auth_state=auth_state,
             verbose=verbose,
             scraper_factory=scraper_factory,
+            terminal=term,
         )
     finally:
-        print(f"Completed in {time.monotonic() - started:.1f}s.", file=sys.stderr)
+        term.write(f"Completed in {time.monotonic() - started:.1f}s.")
 
 
-def _use_progress_bar(verbose: bool) -> bool:
+def _use_progress_bar(verbose: bool, terminal: Terminal) -> bool:
     """The bar only owns stderr when it is a TTY and logs are not wanted.
 
     --verbose keeps debug logs readable; piped output keeps the periodic
@@ -157,7 +156,7 @@ def _use_progress_bar(verbose: bool) -> bool:
     if verbose:
         return False
     try:
-        return bool(sys.stderr.isatty())
+        return bool(terminal.stream.isatty())
     except Exception:
         return False
 
@@ -171,20 +170,20 @@ def _scrape_and_report(
     auth_state: str | None,
     verbose: bool,
     scraper_factory: ScraperFactory,
+    terminal: Terminal,
 ) -> int:
-    bar_mode = _use_progress_bar(verbose)
+    bar_mode = _use_progress_bar(verbose, terminal)
     if not bar_mode:
-        print("Validating URL...", file=sys.stderr)
-    _auth_hint(auth_state)
+        terminal.write("Validating URL...")
+    _auth_hint(auth_state, terminal)
     if bar_mode:
         # No newline: the first bar frame starts with \r and overwrites
-        # this status line, so the crawl shows only the bar. (Saving and
-        # restoring the cursor is unreliable once output scrolls.)
-        print("Opening Google Maps...", end="", flush=True, file=sys.stderr)
+        # this status line, so the crawl shows only the bar.
+        terminal.status("Opening Google Maps...")
     try:
         if not bar_mode:
-            print(f"Initializing scraper for: {url}", file=sys.stderr)
-        kwargs: dict[str, Any] = {"target_reviews": target}
+            terminal.write(f"Initializing scraper for: {url}")
+        kwargs: dict[str, Any] = {"target_reviews": target, "ui": terminal}
         if auth_state:
             kwargs["auth_state"] = auth_state
         if verbose:
@@ -192,14 +191,10 @@ def _scrape_and_report(
             kwargs["progress_enabled"] = False
         html_content = scraper_factory(url, **kwargs).fetch_html()
     except PermanentScrapeError as exc:
-        if bar_mode:
-            print(file=sys.stderr)  # close the status line
-        print(f"Error: {exc}", file=sys.stderr)
+        terminal.write(f"Error: {exc}")  # also closes the status line
         return EXIT_BAD_URL
     except Exception as exc:
-        if bar_mode:
-            print(file=sys.stderr)  # close the status line
-        print(f"Error: {exc}", file=sys.stderr)
+        terminal.write(f"Error: {exc}")
         return EXIT_SCRAPE_FAILED
 
     analyzer = ReviewAnalyzer(html_content, trust_limit=trust_threshold)
@@ -231,21 +226,23 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(levelname)s: %(message)s",
     )
+    terminal = Terminal()
     opts = {
         "target": args.target,
         "trust_threshold": args.trust_threshold,
         "as_json": args.json,
         "auth_state": args.auth_state,
         "verbose": args.verbose,
+        "terminal": terminal,
     }
     if args.login:
-        print("Opening a browser window to sign in to Google...", file=sys.stderr)
+        terminal.write("Opening a browser window to sign in to Google...")
         try:
             saved = login_and_save_state(args.auth_state)
         except PermanentScrapeError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+            terminal.write(f"Error: {exc}")
             return EXIT_SCRAPE_FAILED
-        print(f"Saved Google session to {saved}", file=sys.stderr)
+        terminal.write(f"Saved Google session to {saved}")
         return EXIT_OK
     if args.url:
         return run_once(args.url, **opts)
@@ -259,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.json:
                 # Close this spot's output before the next prompt; --json
                 # keeps stderr free of framing too.
-                print(_attempt_separator(), file=sys.stderr)
+                terminal.separator()
             if code != EXIT_OK:
                 logger.debug("run exited with code %d; continuing loop", code)
         except (KeyboardInterrupt, EOFError):

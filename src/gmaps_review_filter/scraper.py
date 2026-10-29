@@ -3,7 +3,6 @@ import logging
 import random
 import re
 import shutil
-import sys
 import tempfile
 import time
 import urllib.parse
@@ -15,12 +14,12 @@ from gmaps_review_filter.analyzer import ReviewAnalyzer
 from gmaps_review_filter.config import BROWSER_CONFIG, LOCALE_STRINGS
 from gmaps_review_filter.errors import PermanentScrapeError, TransientScrapeError
 from gmaps_review_filter.parsing import parse_review_count
-from gmaps_review_filter.progress import ReviewProgress
 from gmaps_review_filter.selectors import (
     CSS_SELECTORS,
     SCROLLABLE_PANE_CANDIDATES,
     SELECTOR_META,
 )
+from gmaps_review_filter.ui import Terminal
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +35,6 @@ _SHORT_HOSTS = ("maps.app.goo.gl", "goo.gl")
 # Cookies Google sets once a browser is signed in. Any one of them means
 # the session can see the full review feed instead of the ~5-card wall.
 GOOGLE_SESSION_COOKIES = ("SID", "SAPISID", "SSID")
-
-
-def _attempt_separator() -> str:
-    """Dash rule between attempts, wide enough to read, never wrapping."""
-    columns = shutil.get_terminal_size((80, 24)).columns
-    return "-" * max(10, min(columns - 1, 60))
 
 
 def _retry_delay_s(attempt: int) -> float:
@@ -285,20 +278,24 @@ class MapsScraper:
         auth_state=None,
         progress_factory=None,
         progress_enabled=True,
+        ui=None,
     ):
         # Fail fast on non-place URLs: no browser is launched for them.
         self.url = validate_place_url(url)
         self.target = target_reviews or BROWSER_CONFIG["TARGET_REVIEWS"]
         # A saved sign-in lifts the ~5-review wall; absent file = anonymous.
         self.auth_state = resolve_auth_state(auth_state)
-        self.progress_factory = progress_factory or ReviewProgress
+        self.progress_factory = progress_factory
         self.progress_enabled = progress_enabled
+        self.ui = ui or Terminal()
 
     def _make_progress(self, attempt, attempts):
         """One bar per scrape attempt; short label so it fits on one line."""
         label = "Loading reviews" if attempts <= 1 else f"Attempt {attempt}/{attempts}"
         enabled = None if self.progress_enabled else False
-        return self.progress_factory(self.target, enabled=enabled, label=label)
+        if self.progress_factory is not None:
+            return self.progress_factory(self.target, enabled=enabled, label=label)
+        return self.ui.progress(self.target, label=label, enabled=enabled)
 
     def fetch_html(self):
         """Scrape the reviews page.
@@ -333,7 +330,7 @@ class MapsScraper:
                         exc,
                     )
                     # Visual boundary between attempts' progress output.
-                    print(_attempt_separator(), file=sys.stderr)
+                    self.ui.separator()
                     # Jittered backoff to ride out limited-view bursts
                     # instead of hammering Google on a fixed cadence.
                     time.sleep(_retry_delay_s(attempt))
@@ -667,9 +664,6 @@ class MapsScraper:
         try:
             pane = self._find_scrollable_pane(page)
             if pane is None:
-                if progress.enabled:
-                    # Close the "Opening Google Maps..." status line first.
-                    print(file=sys.stderr)
                 logger.warning("Scrollable reviews pane not found.")
                 return 0
 

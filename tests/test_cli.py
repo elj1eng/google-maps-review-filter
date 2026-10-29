@@ -78,7 +78,7 @@ def test_verbose_disables_progress_bar(capsys):
     seen = {}
 
     class FakeScraper:
-        def __init__(self, url, target_reviews=None, progress_enabled=True):
+        def __init__(self, url, target_reviews=None, progress_enabled=True, **kwargs):
             seen["progress_enabled"] = progress_enabled
 
         def fetch_html(self):
@@ -92,7 +92,7 @@ def test_default_run_keeps_progress_bar(capsys):
     seen = {}
 
     class FakeScraper:
-        def __init__(self, url, target_reviews=None):
+        def __init__(self, url, target_reviews=None, **kwargs):
             seen["kwargs"] = "no progress flag"
 
         def fetch_html(self):
@@ -123,7 +123,7 @@ def test_run_once_passes_auth_state_to_factory(monkeypatch, capsys, tmp_path):
     state.write_text("{}", encoding="utf-8")
 
     class FakeScraper:
-        def __init__(self, url, target_reviews=None, auth_state=None):
+        def __init__(self, url, target_reviews=None, auth_state=None, **kwargs):
             seen["auth_state"] = auth_state
 
         def fetch_html(self):
@@ -167,9 +167,10 @@ def _fixture_factory(html_name=None, error=None):
     html = (FIXTURES / html_name).read_text(encoding="utf-8") if html_name else ""
 
     class FakeScraper:
-        def __init__(self, url, target_reviews=None):
+        def __init__(self, url, target_reviews=None, **kwargs):
             self.url = url
             self.target_reviews = target_reviews
+            self.kwargs = kwargs
 
         def fetch_html(self):
             if error is not None:
@@ -196,7 +197,7 @@ def test_tty_run_hides_setup_lines_behind_one_status_line(monkeypatch, capsys):
         def fetch_html(self):
             return (FIXTURES / "restaurant.html").read_text(encoding="utf-8")
 
-    monkeypatch.setattr(main, "_use_progress_bar", lambda verbose: True)
+    monkeypatch.setattr(main, "_use_progress_bar", lambda verbose, terminal: True)
     assert _run(factory=FakeScraper) == 0
     err = capsys.readouterr().err
     assert "Opening Google Maps..." in err
@@ -206,7 +207,7 @@ def test_tty_run_hides_setup_lines_behind_one_status_line(monkeypatch, capsys):
 
 
 def test_tty_error_closes_the_status_line(monkeypatch, capsys):
-    monkeypatch.setattr(main, "_use_progress_bar", lambda verbose: True)
+    monkeypatch.setattr(main, "_use_progress_bar", lambda verbose, terminal: True)
     code = _run(factory=_fixture_factory(error=PermanentScrapeError("no Google")))
     assert code == 2
     err = capsys.readouterr().err
@@ -218,16 +219,17 @@ def test_non_tty_run_keeps_setup_lines(monkeypatch, capsys):
     seen = {}
 
     class FakeScraper:
-        def __init__(self, url, target_reviews=None):
-            seen["kwargs"] = "no bar kwargs"
+        def __init__(self, url, target_reviews=None, **kwargs):
+            seen["kwargs"] = kwargs
 
         def fetch_html(self):
             return (FIXTURES / "restaurant.html").read_text(encoding="utf-8")
 
-    monkeypatch.setattr(main, "_use_progress_bar", lambda verbose: False)
+    monkeypatch.setattr(main, "_use_progress_bar", lambda verbose, terminal: False)
     assert _run(factory=FakeScraper) == 0
     err = capsys.readouterr().err
-    assert seen["kwargs"] == "no bar kwargs"
+    assert "ui" in seen["kwargs"]
+    assert "progress_enabled" not in seen["kwargs"]
     assert "Validating URL..." in err
     assert "Initializing scraper for:" in err
     assert "Opening Google Maps..." not in err
@@ -244,7 +246,7 @@ def _run_interactive(monkeypatch, responses, argv=None, code=0):
     monkeypatch.setattr(main, "run_once", fake_run_once)
     monkeypatch.setattr("builtins.input", lambda prompt="": next(responses))
     monkeypatch.setattr(
-        "gmaps_review_filter.scraper.shutil.get_terminal_size",
+        "gmaps_review_filter.ui.shutil.get_terminal_size",
         lambda fallback=None: os.terminal_size((80, 24)),
     )
     assert main.main(argv or []) == 0
