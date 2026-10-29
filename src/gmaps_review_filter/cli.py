@@ -9,7 +9,11 @@ from typing import Any, Protocol
 from gmaps_review_filter.analyzer import ReviewAnalyzer, ReviewReport, SpotSummary
 from gmaps_review_filter.config import BROWSER_CONFIG, THRESHOLDS
 from gmaps_review_filter.errors import PermanentScrapeError
-from gmaps_review_filter.scraper import MapsScraper, login_and_save_state
+from gmaps_review_filter.scraper import (
+    MapsScraper,
+    _attempt_separator,
+    login_and_save_state,
+)
 
 EXIT_OK = 0
 EXIT_SCRAPE_FAILED = 1
@@ -290,6 +294,10 @@ def main(argv: list[str] | None = None) -> int:
                 print("Goodbye!")
                 return EXIT_OK
             code = run_once(target_url, **opts)
+            if not args.json:
+                # Close this spot's output before the next prompt; --json
+                # keeps stderr free of framing too.
+                print(_attempt_separator(), file=sys.stderr)
             if code != EXIT_OK:
                 logger.debug("run exited with code %d; continuing loop", code)
         except (KeyboardInterrupt, EOFError):

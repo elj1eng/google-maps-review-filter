@@ -79,6 +79,9 @@ uv run gmaps-filter
 # (pip/venv equivalent: gmaps-filter ... after pip install -e .)
 ```
 
+In interactive mode, each spot's report is closed with the same width-aware
+dash rule before the next prompt (skipped with `--json`).
+
 Options:
 
 | Flag | Default | Meaning |
@@ -98,7 +101,7 @@ batch arrives. It appears only when stderr is a TTY and fits the terminal width
 (so the redraw never wraps). Setup chatter (`Validating URL...`,
 `Initializing scraper...`) is hidden and completion logs are suppressed while
 the bar owns the line, leaving just the bar; a dash rule (up to 60 columns)
-separates retry attempts. Under `--verbose` or piped output the bar is replaced
+separates retry attempts and consecutive spots in the interactive loop. Under `--verbose` or piped output the bar is replaced
 with the usual log lines (`--json` stdout stays clean either way).
 
 ### Signed-in sessions (`--login`)

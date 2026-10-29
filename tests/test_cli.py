@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 import sys
 
@@ -272,6 +273,51 @@ def test_non_tty_run_keeps_setup_lines(monkeypatch, capsys):
     assert "Validating URL..." in err
     assert "Initializing scraper for:" in err
     assert "Opening Google Maps..." not in err
+
+
+def _run_interactive(monkeypatch, responses, argv=None, code=0):
+    """Drive main() with fake input and a fake run_once; return URLs."""
+    calls = []
+
+    def fake_run_once(url, **opts):
+        calls.append(url)
+        return code
+
+    monkeypatch.setattr(main, "run_once", fake_run_once)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(responses))
+    monkeypatch.setattr(
+        "gmaps_review_filter.scraper.shutil.get_terminal_size",
+        lambda fallback=None: os.terminal_size((80, 24)),
+    )
+    assert main.main(argv or []) == 0
+    return calls
+
+
+def _rules(err):
+    return [line for line in err.splitlines() if line and set(line) == {"-"}]
+
+
+def test_interactive_run_prints_a_rule_after_each_spot(monkeypatch, capsys):
+    calls = _run_interactive(monkeypatch, iter(["url1", "url2", "q"]))
+    assert calls == ["url1", "url2"]
+    assert _rules(capsys.readouterr().err) == ["-" * 60, "-" * 60]
+
+
+def test_interactive_rule_follows_a_failed_spot(monkeypatch, capsys):
+    calls = _run_interactive(monkeypatch, iter(["bad", "q"]), code=1)
+    assert calls == ["bad"]
+    assert _rules(capsys.readouterr().err) == ["-" * 60]
+
+
+def test_interactive_json_run_has_no_spot_rule(monkeypatch, capsys):
+    calls = _run_interactive(monkeypatch, iter(["url1", "q"]), argv=["--json"])
+    assert calls == ["url1"]
+    assert _rules(capsys.readouterr().err) == []
+
+
+def test_single_url_run_has_no_spot_rule(monkeypatch, capsys):
+    _run_interactive(monkeypatch, iter([]), argv=["https://x"])
+    assert _rules(capsys.readouterr().err) == []
 
 
 def test_run_once_json_stdout_is_pure_json(monkeypatch, capsys):
