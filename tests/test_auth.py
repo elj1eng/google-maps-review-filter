@@ -1,6 +1,7 @@
 """Offline tests for saved-session handling and the login flow."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from gmaps_review_filter.auth import (
@@ -9,7 +10,7 @@ from gmaps_review_filter.auth import (
     resolve_auth_state,
     save_storage_state,
 )
-from gmaps_review_filter.config import BROWSER_CONFIG
+from gmaps_review_filter.config import DEFAULT_SETTINGS
 
 
 class _RecordingContext:
@@ -18,7 +19,7 @@ class _RecordingContext:
 
 
 def test_login_url_is_the_google_sign_in_page():
-    assert BROWSER_CONFIG["LOGIN_URL"].startswith("https://accounts.google.com/")
+    assert DEFAULT_SETTINGS.login_url.startswith("https://accounts.google.com/")
 
 
 def test_has_google_session_detects_auth_cookies():
@@ -42,8 +43,8 @@ def test_resolve_auth_state_uses_explicit_path(tmp_path):
 def test_resolve_auth_state_falls_back_to_config(tmp_path, monkeypatch):
     state = tmp_path / "auth.json"
     state.write_text("{}", encoding="utf-8")
-    monkeypatch.setitem(BROWSER_CONFIG, "AUTH_STATE_PATH", str(state))
-    assert resolve_auth_state(None) == str(state)
+    settings = replace(DEFAULT_SETTINGS, auth_state_path=str(state))
+    assert resolve_auth_state(None, settings=settings) == str(state)
 
 
 def test_save_storage_state_writes_owner_only_file(tmp_path):

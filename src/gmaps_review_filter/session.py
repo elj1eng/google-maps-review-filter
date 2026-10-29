@@ -4,12 +4,12 @@ import logging
 import shutil
 import tempfile
 from types import TracebackType
-from typing import Literal, cast
+from typing import Literal
 
-from playwright.sync_api import Page, Playwright, ViewportSize, sync_playwright
+from playwright.sync_api import Page, Playwright, sync_playwright
 
 from gmaps_review_filter.auth import load_storage_cookies
-from gmaps_review_filter.config import BROWSER_CONFIG
+from gmaps_review_filter.config import DEFAULT_SETTINGS, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +26,16 @@ class ScrapeSession:
     concurrent runs never share a profile.
     """
 
-    def __init__(self, storage_state: str | None = None) -> None:
+    def __init__(
+        self,
+        storage_state: str | None = None,
+        *,
+        settings: Settings = DEFAULT_SETTINGS,
+    ) -> None:
         self.profile_path = tempfile.mkdtemp(prefix="gmaps_")
         self._playwright: Playwright | None = None
         self.storage_state = storage_state
+        self.settings = settings
 
     def __enter__(self) -> Page:
         self._playwright = sync_playwright().start()
@@ -37,8 +43,8 @@ class ScrapeSession:
             self.profile_path,
             headless=True,
             args=["--disable-blink-features=AutomationControlled"],
-            user_agent=BROWSER_CONFIG["USER_AGENT"],
-            viewport=cast(ViewportSize, BROWSER_CONFIG["VIEWPORT"]),
+            user_agent=self.settings.user_agent,
+            viewport=self.settings.viewport,
         )
         if self.storage_state:
             cookies = load_storage_cookies(self.storage_state)

@@ -1,16 +1,13 @@
-"""Tuning knobs: trust threshold, UI-matching locales, browser behavior."""
+"""Tuning knobs: trust threshold, UI-matching locales, browser behavior.
 
+Settings is a frozen dataclass so a component can never mutate global
+state: tests (and future env/CLI overrides) build a variant with
+``dataclasses.replace(DEFAULT_SETTINGS, ...)`` and inject it.
+"""
+
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
-
-
-class Thresholds(TypedDict):
-    MIN_REVIEWS_FOR_TRUST: int
-
-
-THRESHOLDS: Thresholds = {
-    "MIN_REVIEWS_FOR_TRUST": 10,
-}
 
 # Human-language strings for UI matching. The review-count pattern in
 # parsing.REVIEW_COUNT_RE already covers en+vi; this table covers the
@@ -34,62 +31,62 @@ LOCALE_STRINGS: dict[str, dict[str, tuple[str, ...]]] = {
 }
 
 
-class BrowserConfig(TypedDict):
-    VIEWPORT: dict[str, int]
-    TIMEOUT: int
-    SCROLL_LIMIT: int
-    TARGET_REVIEWS: int
-    DYNAMIC_WAIT_MS: int
-    SCROLL_STALL_LIMIT: int
-    SCROLL_SLEEP_S: float
-    SCROLL_WHEEL_PX: int
-    STABLE_POLLS: int
-    STABLE_INTERVAL_S: float
-    STABLE_TIMEOUT_S: int
-    MIN_EXPECTED_REVIEWS: int
-    FETCH_ATTEMPTS: int
-    POST_GOTO_SETTLE_S: float
-    PRE_RELOAD_DELAY_S: float
-    PRE_RELOAD_JITTER_S: float
-    RETRY_BASE_S: float
-    RETRY_CAP_S: float
-    RETRY_JITTER_S: float
-    AUTH_STATE_PATH: str
-    LOGIN_URL: str
-    LOGIN_TIMEOUT_S: int
-    LOGIN_POLL_S: float
-    USER_AGENT: str
+class Viewport(TypedDict):
+    """Playwright's viewport shape (same keys as ``ViewportSize``)."""
+
+    width: int
+    height: int
 
 
-BROWSER_CONFIG: BrowserConfig = {
-    "VIEWPORT": {"width": 1280, "height": 900},
-    "TIMEOUT": 15000,
-    "SCROLL_LIMIT": 40,
-    "TARGET_REVIEWS": 210,
-    "DYNAMIC_WAIT_MS": 6000,
-    "SCROLL_STALL_LIMIT": 5,
-    "SCROLL_SLEEP_S": 1.5,
-    "SCROLL_WHEEL_PX": 2000,
-    "STABLE_POLLS": 3,
-    "STABLE_INTERVAL_S": 0.5,
-    "STABLE_TIMEOUT_S": 8,
-    "MIN_EXPECTED_REVIEWS": 10,
-    "FETCH_ATTEMPTS": 5,
-    "POST_GOTO_SETTLE_S": 2.0,
-    "PRE_RELOAD_DELAY_S": 2.0,
-    "PRE_RELOAD_JITTER_S": 2.0,
-    "RETRY_BASE_S": 5.0,
-    "RETRY_CAP_S": 30.0,
-    "RETRY_JITTER_S": 2.0,
-    # Saved Google session (Playwright storage_state JSON). Anonymous
-    # sessions get ~5 reviews behind a sign-in wall; --login writes this
-    # file. Per-user path, never committed (see .gitignore).
-    "AUTH_STATE_PATH": str(Path.home() / ".config" / "gmaps-filter" / "auth.json"),
-    "LOGIN_URL": "https://accounts.google.com/ServiceLogin?hl=en",
-    "LOGIN_TIMEOUT_S": 300,
-    "LOGIN_POLL_S": 2.0,
-    "USER_AGENT": (
+@dataclass(frozen=True, slots=True)
+class Settings:
+    """All tunable behavior, injectable and immutable."""
+
+    # --- browser -------------------------------------------------------
+    viewport_width: int = 1280
+    viewport_height: int = 900
+    user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-    ),
-}
+    )
+    timeout_ms: int = 15000
+
+    # --- scrape shape --------------------------------------------------
+    target_reviews: int = 210
+    fetch_attempts: int = 5
+    post_goto_settle_s: float = 2.0
+    pre_reload_delay_s: float = 2.0
+    pre_reload_jitter_s: float = 2.0
+    retry_base_s: float = 5.0
+    retry_cap_s: float = 30.0
+    retry_jitter_s: float = 2.0
+    min_reviews_for_trust: int = 10
+
+    # --- scrolling -----------------------------------------------------
+    scroll_limit: int = 40
+    dynamic_wait_ms: int = 6000
+    scroll_stall_limit: int = 5
+    scroll_sleep_s: float = 1.5
+    scroll_wheel_px: int = 2000
+    min_expected_reviews: int = 10
+
+    # --- settle-waits --------------------------------------------------
+    stable_polls: int = 3
+    stable_interval_s: float = 0.5
+    stable_timeout_s: int = 8
+
+    # --- saved session / login ----------------------------------------
+    # Anonymous sessions get ~5 reviews behind a sign-in wall; --login
+    # writes this per-user file (never committed, see .gitignore).
+    auth_state_path: str = str(Path.home() / ".config" / "gmaps-filter" / "auth.json")
+    login_url: str = "https://accounts.google.com/ServiceLogin?hl=en"
+    login_timeout_s: int = 300
+    login_poll_s: float = 2.0
+
+    @property
+    def viewport(self) -> Viewport:
+        """Fresh dict so callers cannot mutate shared settings."""
+        return {"width": self.viewport_width, "height": self.viewport_height}
+
+
+DEFAULT_SETTINGS = Settings()

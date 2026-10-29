@@ -10,14 +10,9 @@ from pathlib import Path
 from typing import cast
 
 from playwright._impl._api_structures import SetCookieParam
-from playwright.sync_api import (
-    BrowserContext,
-    Cookie,
-    ViewportSize,
-    sync_playwright,
-)
+from playwright.sync_api import BrowserContext, Cookie, sync_playwright
 
-from gmaps_review_filter.config import BROWSER_CONFIG
+from gmaps_review_filter.config import DEFAULT_SETTINGS, Settings
 from gmaps_review_filter.errors import PermanentScrapeError
 
 logger = logging.getLogger(__name__)
@@ -34,13 +29,17 @@ def has_google_session(cookies: Sequence[Cookie]) -> bool:
     )
 
 
-def resolve_auth_state(auth_state: str | None = None) -> str | None:
+def resolve_auth_state(
+    auth_state: str | None = None,
+    *,
+    settings: Settings = DEFAULT_SETTINGS,
+) -> str | None:
     """Return the saved session path, or None when it doesn't exist yet.
 
     Anonymous scraping still works: it just hits the ~5-review wall, so a
     missing file is a fallback, not an error.
     """
-    path = Path(auth_state or BROWSER_CONFIG["AUTH_STATE_PATH"]).expanduser()
+    path = Path(auth_state or settings.auth_state_path).expanduser()
     return str(path) if path.is_file() else None
 
 
@@ -69,7 +68,10 @@ def load_storage_cookies(path: str | Path) -> list[SetCookieParam]:
 
 
 def login_and_save_state(
-    path: str | None = None, *, timeout_s: float | None = None
+    path: str | None = None,
+    *,
+    timeout_s: float | None = None,
+    settings: Settings = DEFAULT_SETTINGS,
 ) -> str:
     """Open a headed browser, wait for a Google sign-in, save the session.
 
@@ -77,9 +79,9 @@ def login_and_save_state(
     also works when stdin is not a TTY. Raises PermanentScrapeError on
     timeout: this is a setup step, retrying cannot fix a missing login.
     """
-    target = str(Path(path or BROWSER_CONFIG["AUTH_STATE_PATH"]).expanduser())
-    timeout = timeout_s if timeout_s is not None else BROWSER_CONFIG["LOGIN_TIMEOUT_S"]
-    poll_s = BROWSER_CONFIG["LOGIN_POLL_S"]
+    target = str(Path(path or settings.auth_state_path).expanduser())
+    timeout = timeout_s if timeout_s is not None else settings.login_timeout_s
+    poll_s = settings.login_poll_s
     profile_path = tempfile.mkdtemp(prefix="gmaps_login_")
     saved = None
     try:
@@ -88,11 +90,11 @@ def login_and_save_state(
                 profile_path,
                 headless=False,
                 args=["--disable-blink-features=AutomationControlled"],
-                user_agent=BROWSER_CONFIG["USER_AGENT"],
-                viewport=cast(ViewportSize, BROWSER_CONFIG["VIEWPORT"]),
+                user_agent=settings.user_agent,
+                viewport=settings.viewport,
             )
             page = context.pages[0]
-            page.goto(BROWSER_CONFIG["LOGIN_URL"], wait_until="domcontentloaded")
+            page.goto(settings.login_url, wait_until="domcontentloaded")
             logger.info(
                 "Sign in to Google in the opened window (waiting up to %ss).",
                 timeout,

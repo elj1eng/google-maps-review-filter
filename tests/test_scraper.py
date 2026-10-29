@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from gmaps_review_filter.config import BROWSER_CONFIG
+from gmaps_review_filter.config import DEFAULT_SETTINGS
 from gmaps_review_filter.errors import PermanentScrapeError, TransientScrapeError
 from gmaps_review_filter.scraper import (
     MapsScraper,
@@ -120,7 +120,7 @@ def test_transient_exhaustion_message_names_actual_failure(monkeypatch):
     'limited review list')."""
     _run_fetch(
         monkeypatch,
-        [TransientScrapeError("no reviews list")] * BROWSER_CONFIG["FETCH_ATTEMPTS"],
+        [TransientScrapeError("no reviews list")] * DEFAULT_SETTINGS.fetch_attempts,
     )
     with pytest.raises(RuntimeError) as excinfo:
         MapsScraper(PLACE).fetch_html()
@@ -129,7 +129,7 @@ def test_transient_exhaustion_message_names_actual_failure(monkeypatch):
 
 
 def test_transient_exhaustion_raises_runtime_error(monkeypatch):
-    n = BROWSER_CONFIG["FETCH_ATTEMPTS"]
+    n = DEFAULT_SETTINGS.fetch_attempts
     calls = _run_fetch(monkeypatch, [TransientScrapeError("x")] * n)
     with pytest.raises(RuntimeError, match=f"after {n} attempts"):
         MapsScraper(PLACE).fetch_html()
@@ -137,7 +137,7 @@ def test_transient_exhaustion_raises_runtime_error(monkeypatch):
 
 
 def test_no_sleep_after_final_attempt(monkeypatch):
-    n = BROWSER_CONFIG["FETCH_ATTEMPTS"]
+    n = DEFAULT_SETTINGS.fetch_attempts
     _run_fetch(monkeypatch, [TransientScrapeError("x")] * n)
     sleeps = []
     monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
@@ -147,7 +147,7 @@ def test_no_sleep_after_final_attempt(monkeypatch):
 
 
 def test_final_attempt_does_not_claim_it_will_retry(monkeypatch, caplog):
-    n = BROWSER_CONFIG["FETCH_ATTEMPTS"]
+    n = DEFAULT_SETTINGS.fetch_attempts
     _run_fetch(monkeypatch, [TransientScrapeError("x")] * n)
     with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError):
         MapsScraper(PLACE).fetch_html()
@@ -160,16 +160,19 @@ def test_final_attempt_does_not_claim_it_will_retry(monkeypatch, caplog):
 
 def test_retry_delay_is_jittered_exponential(monkeypatch):
     monkeypatch.setattr("gmaps_review_filter.scraper.random.uniform", lambda a, b: 1.5)
-    base = BROWSER_CONFIG["RETRY_BASE_S"]
-    cap = BROWSER_CONFIG["RETRY_CAP_S"]
-    assert _retry_delay_s(1) == base + 1.5
-    assert _retry_delay_s(2) == base * 2 + 1.5
-    assert _retry_delay_s(99) == cap + 1.5
+    base = DEFAULT_SETTINGS.retry_base_s
+    cap = DEFAULT_SETTINGS.retry_cap_s
+    assert _retry_delay_s(1, settings=DEFAULT_SETTINGS) == base + 1.5
+    assert _retry_delay_s(2, settings=DEFAULT_SETTINGS) == base * 2 + 1.5
+    assert _retry_delay_s(99, settings=DEFAULT_SETTINGS) == cap + 1.5
 
 
 def test_pre_reload_delay_adds_jitter(monkeypatch):
     monkeypatch.setattr("gmaps_review_filter.scraper.random.uniform", lambda a, b: 1.0)
-    assert _pre_reload_delay_s() == BROWSER_CONFIG["PRE_RELOAD_DELAY_S"] + 1.0
+    assert (
+        _pre_reload_delay_s(settings=DEFAULT_SETTINGS)
+        == DEFAULT_SETTINGS.pre_reload_delay_s + 1.0
+    )
 
 
 # --- fetch_once: conditional reload + saved session ---
@@ -206,11 +209,13 @@ def _stub_fetch_once(monkeypatch, page, limited_sequence):
     monkeypatch.setattr(
         scraper_mod, "ScrapeSession", lambda *a, **k: _FetchOnceSession(page)
     )
-    monkeypatch.setattr(scraper_mod, "wait_for_title", lambda p: None)
+    monkeypatch.setattr(scraper_mod, "wait_for_title", lambda p, **kw: None)
     seq = list(limited_sequence)
     monkeypatch.setattr(scraper_mod, "is_limited_view", lambda p: seq.pop(0))
     monkeypatch.setattr(MapsScraper, "_open_reviews_tab", lambda self, p: True)
-    monkeypatch.setattr(scraper_mod, "scroll_reviews", lambda p, target, progress: 5)
+    monkeypatch.setattr(
+        scraper_mod, "scroll_reviews", lambda p, target, progress, **kw: 5
+    )
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
 
@@ -234,17 +239,19 @@ def test_scraper_passes_saved_state_to_session(tmp_path, monkeypatch):
     seen = {}
 
     class _CapturingSession(_FetchOnceSession):
-        def __init__(self, storage_state=None):
+        def __init__(self, storage_state=None, **kwargs):
             seen["state"] = storage_state
             super().__init__(_FetchOncePage())
 
     import gmaps_review_filter.scraper as scraper_mod
 
     monkeypatch.setattr(scraper_mod, "ScrapeSession", _CapturingSession)
-    monkeypatch.setattr(scraper_mod, "wait_for_title", lambda p: None)
-    monkeypatch.setattr(scraper_mod, "is_limited_view", lambda p: False)
+    monkeypatch.setattr(scraper_mod, "wait_for_title", lambda p, **kw: None)
+    monkeypatch.setattr(scraper_mod, "is_limited_view", lambda p, **kw: False)
     monkeypatch.setattr(MapsScraper, "_open_reviews_tab", lambda self, p: True)
-    monkeypatch.setattr(scraper_mod, "scroll_reviews", lambda p, target, progress: 5)
+    monkeypatch.setattr(
+        scraper_mod, "scroll_reviews", lambda p, target, progress, **kw: 5
+    )
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
     MapsScraper(PLACE, auth_state=str(state))._fetch_once()

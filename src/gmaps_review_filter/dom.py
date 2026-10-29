@@ -11,7 +11,7 @@ from collections.abc import Callable
 
 from playwright.sync_api import Locator, Page
 
-from gmaps_review_filter.config import BROWSER_CONFIG
+from gmaps_review_filter.config import DEFAULT_SETTINGS, Settings
 from gmaps_review_filter.errors import PermanentScrapeError
 from gmaps_review_filter.locale import detect_lang
 from gmaps_review_filter.parsing import parse_review_count
@@ -61,6 +61,7 @@ def wait_for_stable_count(
     polls: int | None = None,
     interval_s: float | None = None,
     timeout_s: float | None = None,
+    settings: Settings = DEFAULT_SETTINGS,
 ) -> int | None:
     """Poll get_count() until it repeats the same value `polls` times in a row.
 
@@ -68,11 +69,9 @@ def wait_for_stable_count(
     as soon as the count settles, or the last observed value at timeout.
     get_count is injected so the policy stays testable without a browser.
     """
-    needed = polls if polls is not None else BROWSER_CONFIG["STABLE_POLLS"]
-    interval = (
-        interval_s if interval_s is not None else BROWSER_CONFIG["STABLE_INTERVAL_S"]
-    )
-    timeout = timeout_s if timeout_s is not None else BROWSER_CONFIG["STABLE_TIMEOUT_S"]
+    needed = polls if polls is not None else settings.stable_polls
+    interval = interval_s if interval_s is not None else settings.stable_interval_s
+    timeout = timeout_s if timeout_s is not None else settings.stable_timeout_s
     deadline = time.monotonic() + timeout
     last: int | None = None
     run = 0
@@ -92,7 +91,7 @@ def wait_for_stable_count(
         time.sleep(interval)
 
 
-def wait_for_title(page: Page) -> None:
+def wait_for_title(page: Page, *, settings: Settings = DEFAULT_SETTINGS) -> None:
     """Wait for the place title; fail loudly when it never renders.
 
     Raises PermanentScrapeError: a page with no title after load +
@@ -102,7 +101,7 @@ def wait_for_title(page: Page) -> None:
     try:
         page.wait_for_selector(
             CSS_SELECTORS["BUSINESS_TITLE"],
-            timeout=BROWSER_CONFIG["TIMEOUT"],
+            timeout=settings.timeout_ms,
         )
     except Exception as exc:
         raise PermanentScrapeError(
@@ -158,7 +157,13 @@ def find_scrollable_pane(page: Page) -> Locator | None:
         return None
 
 
-def wheel_scroll(page: Page, pane: Locator, wheel_px: int) -> bool:
+def wheel_scroll(
+    page: Page,
+    pane: Locator,
+    wheel_px: int,
+    *,
+    settings: Settings = DEFAULT_SETTINGS,
+) -> bool:
     """Scroll the reviews pane with real wheel input.
 
     Returns True only when trusted wheel input was delivered.
@@ -170,8 +175,8 @@ def wheel_scroll(page: Page, pane: Locator, wheel_px: int) -> bool:
     try:
         box = pane.bounding_box()
         if box and box["width"] > 0 and box["height"] > 0:
-            vw = BROWSER_CONFIG["VIEWPORT"]["width"]
-            vh = BROWSER_CONFIG["VIEWPORT"]["height"]
+            vw = settings.viewport_width
+            vh = settings.viewport_height
             cx = min(max(box["x"] + box["width"] / 2, 1), vw - 1)
             cy = min(max(box["y"] + box["height"] / 2, 1), vh - 1)
             page.mouse.move(cx, cy)

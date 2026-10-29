@@ -9,7 +9,7 @@ from typing import Any, Protocol
 
 from gmaps_review_filter.analyzer import ReviewAnalyzer
 from gmaps_review_filter.auth import login_and_save_state
-from gmaps_review_filter.config import BROWSER_CONFIG, THRESHOLDS
+from gmaps_review_filter.config import DEFAULT_SETTINGS, Settings
 from gmaps_review_filter.errors import PermanentScrapeError
 from gmaps_review_filter.report import format_human, to_dict
 from gmaps_review_filter.scraper import MapsScraper
@@ -48,7 +48,7 @@ def ensure_utf8_stdout() -> None:
         reconfigure(encoding="utf-8")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(settings: Settings = DEFAULT_SETTINGS) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Scrape Google Maps reviews; split trusted vs low-activity."
     )
@@ -58,13 +58,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--target",
         type=int,
-        default=BROWSER_CONFIG["TARGET_REVIEWS"],
+        default=settings.target_reviews,
         help="reviews to load per spot (default: %(default)s)",
     )
     parser.add_argument(
         "--trust-threshold",
         type=int,
-        default=THRESHOLDS["MIN_REVIEWS_FOR_TRUST"],
+        default=settings.min_reviews_for_trust,
         dest="trust_threshold",
         help="reviewers above this count as trusted (default: %(default)s)",
     )
@@ -86,9 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         dest="auth_state",
         default=None,
-        help=(
-            f"saved Google session JSON (default: {BROWSER_CONFIG['AUTH_STATE_PATH']})"
-        ),
+        help=(f"saved Google session JSON (default: {settings.auth_state_path})"),
     )
     return parser
 
@@ -103,9 +101,14 @@ def _use_color() -> bool:
         return False
 
 
-def _auth_hint(auth_state: str | None, terminal: Terminal) -> None:
+def _auth_hint(
+    auth_state: str | None,
+    terminal: Terminal,
+    *,
+    settings: Settings = DEFAULT_SETTINGS,
+) -> None:
     """Tell the user once when scraping anonymously (5-review wall)."""
-    path = Path(auth_state or BROWSER_CONFIG["AUTH_STATE_PATH"]).expanduser()
+    path = Path(auth_state or settings.auth_state_path).expanduser()
     if not path.is_file():
         terminal.write(
             f"Note: no saved Google session at {path}; anonymous runs only "
@@ -123,6 +126,7 @@ def run_once(
     verbose: bool = False,
     scraper_factory: ScraperFactory = MapsScraper,
     terminal: Terminal | None = None,
+    settings: Settings = DEFAULT_SETTINGS,
 ) -> int:
     """Scrape and report one URL. Returns a process exit code.
 
@@ -143,6 +147,7 @@ def run_once(
             verbose=verbose,
             scraper_factory=scraper_factory,
             terminal=term,
+            settings=settings,
         )
     finally:
         term.write(f"Completed in {time.monotonic() - started:.1f}s.")
@@ -172,11 +177,12 @@ def _scrape_and_report(
     verbose: bool,
     scraper_factory: ScraperFactory,
     terminal: Terminal,
+    settings: Settings = DEFAULT_SETTINGS,
 ) -> int:
     bar_mode = _use_progress_bar(verbose, terminal)
     if not bar_mode:
         terminal.write("Validating URL...")
-    _auth_hint(auth_state, terminal)
+    _auth_hint(auth_state, terminal, settings=settings)
     if bar_mode:
         # No newline: the first bar frame starts with \r and overwrites
         # this status line, so the crawl shows only the bar.
@@ -184,7 +190,11 @@ def _scrape_and_report(
     try:
         if not bar_mode:
             terminal.write(f"Initializing scraper for: {url}")
-        kwargs: dict[str, Any] = {"target_reviews": target, "ui": terminal}
+        kwargs: dict[str, Any] = {
+            "target_reviews": target,
+            "ui": terminal,
+            "settings": settings,
+        }
         if auth_state:
             kwargs["auth_state"] = auth_state
         if verbose:

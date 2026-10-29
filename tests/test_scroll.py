@@ -58,7 +58,7 @@ class _ScrollPage:
 def _scroll(monkeypatch, growth, *, target=210, spot_total=None):
     page = _ScrollPage(growth)
     monkeypatch.setattr(scroll_mod, "find_scrollable_pane", lambda p: object())
-    monkeypatch.setattr(scroll_mod, "wheel_scroll", lambda p, pane, px: True)
+    monkeypatch.setattr(scroll_mod, "wheel_scroll", lambda p, pane, px, **kw: True)
     monkeypatch.setattr(scroll_mod, "spot_review_total", lambda p: spot_total)
     monkeypatch.setattr(time, "sleep", lambda s: None)
     progress = _RecordingProgress(target)
@@ -130,7 +130,7 @@ def test_bar_mode_hides_setup_and_completion_logs(monkeypatch, caplog):
 def test_piped_mode_keeps_setup_and_completion_logs(monkeypatch, caplog):
     page = _ScrollPage([50, 0, 0, 0, 0, 0])
     monkeypatch.setattr(scroll_mod, "find_scrollable_pane", lambda p: object())
-    monkeypatch.setattr(scroll_mod, "wheel_scroll", lambda p, pane, px: True)
+    monkeypatch.setattr(scroll_mod, "wheel_scroll", lambda p, pane, px, **kw: True)
     monkeypatch.setattr(scroll_mod, "spot_review_total", lambda p: None)
     monkeypatch.setattr(time, "sleep", lambda s: None)
     progress = _RecordingProgress(210, enabled=False)
@@ -160,7 +160,7 @@ def test_scroll_finishes_bar_before_completion_logs(monkeypatch):
             events.append(record.getMessage())
 
     monkeypatch.setattr(scroll_mod, "find_scrollable_pane", lambda p: object())
-    monkeypatch.setattr(scroll_mod, "wheel_scroll", lambda p, pane, px: True)
+    monkeypatch.setattr(scroll_mod, "wheel_scroll", lambda p, pane, px, **kw: True)
     monkeypatch.setattr(scroll_mod, "spot_review_total", lambda p: None)
     monkeypatch.setattr(time, "sleep", lambda s: None)
     progress = _OrderedProgress(210, enabled=False)

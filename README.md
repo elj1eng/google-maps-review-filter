@@ -9,7 +9,7 @@ CLI tool that scrapes Google Maps reviews for a place URL, then filters out low-
 3. `analyzer.py` parses with BeautifulSoup:
    - Spot summary: name, rating, total reviews
    - Per-review: star rating + reviewer review count
-   - Split by `THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]` (default 10, or `--trust-threshold`): `<= limit` = filtered, `> limit` = trusted
+   - Split by `Settings.min_reviews_for_trust` (default 10, or `--trust-threshold`): `<= limit` = filtered, `> limit` = trusted
    - Reports trusted ratio, all avg vs trusted avg. Cards with no parseable rating are excluded from both averages and reported as unparseable (a markup-change tripwire, not silent data loss).
 
 ## The Algorithm
@@ -39,8 +39,8 @@ over classified cards only (`N/A` when none classified). A high filtered share s
 > [!NOTE]
 > **Tuning for your use case:** Prefer the CLI flags (`--target`, `--trust-threshold`); `constants.py` holds the defaults.
 > - `--trust-threshold` (default `10`): raise it (e.g. `20-50`) to filter more aggressively (stricter burner detection for high-trust vetting), or lower it (e.g. `3-5`) to filter only the barest accounts in tourist-heavy areas.
-> - `BROWSER_CONFIG["SCROLL_LIMIT"]`, `["SCROLL_STALL_LIMIT"]`, `["DYNAMIC_WAIT_MS"]`: increase for large spots (1000+ reviews) to enlarge `N_total` and reduce sampling bias; decrease for faster CI / low-bandwidth runs.
-> - `BROWSER_CONFIG["MIN_EXPECTED_REVIEWS"]`: warns when fewer cards loaded than expected — a smoke signal for slow loads or rate limiting, not a second scroll pass.
+> - `Settings.scroll_limit`, `.scroll_stall_limit`, `.dynamic_wait_ms`: increase for large spots (1000+ reviews) to enlarge `N_total` and reduce sampling bias; decrease for faster CI / low-bandwidth runs.
+> - `Settings.min_expected_reviews`: warns when fewer cards loaded than expected — a smoke signal for slow loads or rate limiting, not a second scroll pass.
 > Validate any change against 3-5 known spots (1 clearly legit, 1 clearly spammy, 1 borderline) before treating the output as production signal. These heuristics flag *suspicion*, not proof of fraud.
 
 ## Requirements

@@ -5,7 +5,7 @@ import time
 
 from playwright.sync_api import Page
 
-from gmaps_review_filter.config import BROWSER_CONFIG
+from gmaps_review_filter.config import DEFAULT_SETTINGS, Settings
 from gmaps_review_filter.dom import (
     find_scrollable_pane,
     spot_review_total,
@@ -17,17 +17,23 @@ from gmaps_review_filter.selectors import CSS_SELECTORS
 logger = logging.getLogger(__name__)
 
 
-def scroll_reviews(page: Page, target: int, progress: ReviewProgress) -> int:
+def scroll_reviews(
+    page: Page,
+    target: int,
+    progress: ReviewProgress,
+    *,
+    settings: Settings = DEFAULT_SETTINGS,
+) -> int:
     """Scroll until the target sample or the spot's last review is loaded.
 
     Returns the number of review cards in the final DOM. The progress bar
     is finished on every path, including failures.
     """
     card_sel = f".{CSS_SELECTORS['REVIEW_CARD']}"
-    stall_limit = BROWSER_CONFIG["SCROLL_STALL_LIMIT"]
-    sleep_s = BROWSER_CONFIG["SCROLL_SLEEP_S"]
-    wait_ms = BROWSER_CONFIG["DYNAMIC_WAIT_MS"]
-    wheel_px = BROWSER_CONFIG["SCROLL_WHEEL_PX"]
+    stall_limit = settings.scroll_stall_limit
+    sleep_s = settings.scroll_sleep_s
+    wait_ms = settings.dynamic_wait_ms
+    wheel_px = settings.scroll_wheel_px
     if not progress.enabled:
         logger.info("Scrolling review list dynamically...")
 
@@ -53,7 +59,7 @@ def scroll_reviews(page: Page, target: int, progress: ReviewProgress) -> int:
 
         no_change_count = 0
         completion: tuple[str, tuple[int, ...]] | None = None
-        for i in range(BROWSER_CONFIG["SCROLL_LIMIT"]):
+        for i in range(settings.scroll_limit):
             try:
                 prev_count = page.locator(card_sel).count()
             except Exception:
@@ -84,10 +90,10 @@ def scroll_reviews(page: Page, target: int, progress: ReviewProgress) -> int:
                     pass
 
             # 1) Trusted wheel input over the pane (primary trigger).
-            if not wheel_scroll(page, pane, wheel_px):
+            if not wheel_scroll(page, pane, wheel_px, settings=settings):
                 try:
                     pane = find_scrollable_pane(page) or pane
-                    wheel_scroll(page, pane, wheel_px)
+                    wheel_scroll(page, pane, wheel_px, settings=settings)
                 except Exception:
                     pass
 
@@ -145,7 +151,7 @@ def scroll_reviews(page: Page, target: int, progress: ReviewProgress) -> int:
         progress.finish()
         if completion is not None and not progress.enabled:
             logger.info(completion[0], *completion[1])
-        min_expected = BROWSER_CONFIG["MIN_EXPECTED_REVIEWS"]
+        min_expected = settings.min_expected_reviews
         # A spot with fewer reviews than min_expected is complete, not
         # a slow load; only warn when the DOM is short of what exists.
         expected = min_expected if not total else min(min_expected, total)

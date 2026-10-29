@@ -9,7 +9,7 @@ import re
 
 from bs4 import BeautifulSoup, Tag
 
-from gmaps_review_filter.config import THRESHOLDS
+from gmaps_review_filter.config import DEFAULT_SETTINGS, Settings
 from gmaps_review_filter.models import PlaceSummary, ReviewReport
 from gmaps_review_filter.parsing import (
     parse_rating_text,
@@ -22,12 +22,16 @@ from gmaps_review_filter.selectors import CSS_SELECTORS
 class ReviewAnalyzer:
     """Parse one page's place header and review cards."""
 
-    def __init__(self, html: str, trust_limit: int | None = None):
+    def __init__(
+        self,
+        html: str,
+        trust_limit: int | None = None,
+        *,
+        settings: Settings = DEFAULT_SETTINGS,
+    ) -> None:
         self.soup = BeautifulSoup(html, "html.parser")
         self.limit: int = (
-            trust_limit
-            if trust_limit is not None
-            else THRESHOLDS["MIN_REVIEWS_FOR_TRUST"]
+            trust_limit if trust_limit is not None else settings.min_reviews_for_trust
         )
         self._place: PlaceSummary | None = None
 

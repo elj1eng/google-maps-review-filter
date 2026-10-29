@@ -9,7 +9,7 @@ from playwright.sync_api import Locator, Page
 
 from gmaps_review_filter.analyzer import ReviewAnalyzer
 from gmaps_review_filter.auth import resolve_auth_state
-from gmaps_review_filter.config import BROWSER_CONFIG, LOCALE_STRINGS
+from gmaps_review_filter.config import DEFAULT_SETTINGS, LOCALE_STRINGS, Settings
 from gmaps_review_filter.dom import (
     card_counter,
     is_limited_view,
@@ -42,18 +42,18 @@ class ProgressFactory(Protocol):
     ) -> ReviewProgress: ...
 
 
-def _retry_delay_s(attempt: int) -> float:
+def _retry_delay_s(attempt: int, *, settings: Settings = DEFAULT_SETTINGS) -> float:
     """Jittered exponential backoff for inter-attempt waits (1-based)."""
-    base = BROWSER_CONFIG["RETRY_BASE_S"]
-    cap = BROWSER_CONFIG["RETRY_CAP_S"]
-    jitter = BROWSER_CONFIG["RETRY_JITTER_S"]
+    base = settings.retry_base_s
+    cap = settings.retry_cap_s
+    jitter = settings.retry_jitter_s
     return min(base * 2.0 ** (attempt - 1), cap) + random.uniform(0, jitter)  # noqa: S311
 
 
-def _pre_reload_delay_s() -> float:
+def _pre_reload_delay_s(*, settings: Settings = DEFAULT_SETTINGS) -> float:
     """Settle delay before a reload so rapid double-loads don't flag bots."""
-    base = BROWSER_CONFIG["PRE_RELOAD_DELAY_S"]
-    jitter = BROWSER_CONFIG["PRE_RELOAD_JITTER_S"]
+    base = settings.pre_reload_delay_s
+    jitter = settings.pre_reload_jitter_s
     return base + random.uniform(0, jitter)  # noqa: S311
 
 
@@ -80,12 +80,14 @@ class MapsScraper:
         progress_factory: ProgressFactory | None = None,
         progress_enabled: bool = True,
         ui: Terminal | None = None,
+        settings: Settings = DEFAULT_SETTINGS,
     ) -> None:
         # Fail fast on non-place URLs: no browser is launched for them.
         self.url = validate_place_url(url)
-        self.target = target_reviews or BROWSER_CONFIG["TARGET_REVIEWS"]
+        self.settings = settings
+        self.target = target_reviews or settings.target_reviews
         # A saved sign-in lifts the ~5-review wall; absent file = anonymous.
-        self.auth_state = resolve_auth_state(auth_state)
+        self.auth_state = resolve_auth_state(auth_state, settings=settings)
         self.progress_factory = progress_factory
         self.progress_enabled = progress_enabled
         self.ui = ui or Terminal()
@@ -106,7 +108,7 @@ class MapsScraper:
         backoff. Permanent failures (bad URL, no Google source) raise
         immediately without burning retries.
         """
-        attempts = BROWSER_CONFIG["FETCH_ATTEMPTS"]
+        attempts = self.settings.fetch_attempts
         last_error: Exception | None = None
         for attempt in range(1, attempts + 1):
             try:
@@ -134,7 +136,7 @@ class MapsScraper:
                     self.ui.separator()
                     # Jittered backoff to ride out limited-view bursts
                     # instead of hammering Google on a fixed cadence.
-                    time.sleep(_retry_delay_s(attempt))
+                    time.sleep(_retry_delay_s(attempt, settings=self.settings))
                 else:
                     logger.warning(
                         "Attempt %d/%d: %s — giving up.", attempt, attempts, exc
@@ -144,22 +146,22 @@ class MapsScraper:
         )
 
     def _fetch_once(self, attempt: int = 1, attempts: int = 1) -> tuple[str, int]:
-        with ScrapeSession(self.auth_state) as page:
+        with ScrapeSession(self.auth_state, settings=self.settings) as page:
             page.goto(self.url, wait_until="domcontentloaded")
-            wait_for_title(page)
+            wait_for_title(page, settings=self.settings)
 
             # Settle: a transient banner can clear on its own once JS
             # finishes; checking immediately locks in a false positive.
-            time.sleep(BROWSER_CONFIG["POST_GOTO_SETTLE_S"])
+            time.sleep(self.settings.post_goto_settle_s)
 
             # Conditional reload: skip the second navigation on the happy
             # path. Back-to-back goto+reload from a fresh profile reads as
             # automation and triggers the limited view itself.
             if is_limited_view(page):
                 # Wait longer before the refresh instead of hammering it.
-                time.sleep(_pre_reload_delay_s())
+                time.sleep(_pre_reload_delay_s(settings=self.settings))
                 page.reload(wait_until="domcontentloaded")
-                wait_for_title(page)
+                wait_for_title(page, settings=self.settings)
 
                 # Fail fast: the anti-bot banner is already on the DOM
                 # when the limited view is active, so don't open tabs.
@@ -172,7 +174,10 @@ class MapsScraper:
 
             loaded = (
                 scroll_reviews(
-                    page, self.target, self._make_progress(attempt, attempts)
+                    page,
+                    self.target,
+                    self._make_progress(attempt, attempts),
+                    settings=self.settings,
                 )
                 if opened
                 else 0
@@ -220,13 +225,15 @@ class MapsScraper:
         try:
             page.wait_for_selector(
                 card_sel,
-                timeout=BROWSER_CONFIG["TIMEOUT"],
+                timeout=self.settings.timeout_ms,
             )
         except Exception:
             logger.warning("No review cards appeared after opening reviews tab.")
             return False
 
-        settled = wait_for_stable_count(card_counter(page, card_sel))
+        settled = wait_for_stable_count(
+            card_counter(page, card_sel), settings=self.settings
+        )
         logger.debug("Review list settled at %s cards.", settled)
         return True
 
@@ -276,7 +283,7 @@ class MapsScraper:
         try:
             page.wait_for_selector(
                 CSS_SELECTORS["REVIEW_SOURCE_OPTION"],
-                timeout=BROWSER_CONFIG["TIMEOUT"],
+                timeout=self.settings.timeout_ms,
             )
         except Exception:
             pass
@@ -307,10 +314,10 @@ class MapsScraper:
                     "xpath=ancestor::div[contains(@class,'twHv4e')]"
                 ).first.click(force=True)
             try:
-                first.wait_for(state="detached", timeout=BROWSER_CONFIG["TIMEOUT"])
+                first.wait_for(state="detached", timeout=self.settings.timeout_ms)
             except Exception:
                 pass  # list updated in place; verify presence below
-            page.wait_for_selector(card_sel, timeout=BROWSER_CONFIG["TIMEOUT"])
+            page.wait_for_selector(card_sel, timeout=self.settings.timeout_ms)
         except TransientScrapeError:
             raise
         except Exception as exc:
@@ -320,5 +327,7 @@ class MapsScraper:
 
         # Settle: the list may update in place after the switch; proceed
         # as soon as the count stops changing instead of a fixed sleep.
-        settled = wait_for_stable_count(card_counter(page, card_sel))
+        settled = wait_for_stable_count(
+            card_counter(page, card_sel), settings=self.settings
+        )
         logger.info("Review filter switched to 'Google' (%s cards).", settled)

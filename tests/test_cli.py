@@ -5,10 +5,11 @@ import logging
 import os
 import re
 import sys
+from dataclasses import replace
 
 import gmaps_review_filter.cli as main
 from gmaps_review_filter.cli import build_parser, run_once
-from gmaps_review_filter.config import BROWSER_CONFIG
+from gmaps_review_filter.config import DEFAULT_SETTINGS
 from gmaps_review_filter.errors import PermanentScrapeError
 from gmaps_review_filter.locale import detect_lang, matches_any
 from gmaps_review_filter.scraper import MapsScraper
@@ -133,10 +134,8 @@ def test_run_once_passes_auth_state_to_factory(monkeypatch, capsys, tmp_path):
 
 
 def test_run_once_hints_when_no_session(monkeypatch, capsys, tmp_path):
-    monkeypatch.setitem(
-        BROWSER_CONFIG, "AUTH_STATE_PATH", str(tmp_path / "absent.json")
-    )
-    code = _run(factory=_fixture_factory("restaurant.html"))
+    settings = replace(DEFAULT_SETTINGS, auth_state_path=str(tmp_path / "absent.json"))
+    code = _run(factory=_fixture_factory("restaurant.html"), settings=settings)
     assert code == 0
     assert "Run --login" in capsys.readouterr().err
 

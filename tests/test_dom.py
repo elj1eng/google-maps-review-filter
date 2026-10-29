@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from gmaps_review_filter.config import BROWSER_CONFIG
+from gmaps_review_filter.config import DEFAULT_SETTINGS
 from gmaps_review_filter.dom import (
     locate,
     spot_review_total,
@@ -53,9 +53,9 @@ def test_settle_caps_on_ever_growing_counts():
 
 
 def test_settle_defaults_come_from_config():
-    assert BROWSER_CONFIG["STABLE_POLLS"] == 3
-    assert BROWSER_CONFIG["STABLE_INTERVAL_S"] == 0.5
-    assert BROWSER_CONFIG["STABLE_TIMEOUT_S"] == 8
+    assert DEFAULT_SETTINGS.stable_polls == 3
+    assert DEFAULT_SETTINGS.stable_interval_s == 0.5
+    assert DEFAULT_SETTINGS.stable_timeout_s == 8
 
 
 def test_settle_treats_unreadable_counts_as_none():
