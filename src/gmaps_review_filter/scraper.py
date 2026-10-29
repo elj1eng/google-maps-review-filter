@@ -11,7 +11,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-from gmaps_review_filter.analyzer import ReviewAnalyzer
+from gmaps_review_filter.analyzer import REVIEW_COUNT_RE, ReviewAnalyzer
 from gmaps_review_filter.config import BROWSER_CONFIG, LOCALE_STRINGS
 from gmaps_review_filter.errors import PermanentScrapeError, TransientScrapeError
 from gmaps_review_filter.progress import ReviewProgress
@@ -35,6 +35,12 @@ _SHORT_HOSTS = ("maps.app.goo.gl", "goo.gl")
 # Cookies Google sets once a browser is signed in. Any one of them means
 # the session can see the full review feed instead of the ~5-card wall.
 GOOGLE_SESSION_COOKIES = ("SID", "SAPISID", "SSID")
+
+
+def _attempt_separator() -> str:
+    """Dash rule between attempts, wide enough to read, never wrapping."""
+    columns = shutil.get_terminal_size((80, 24)).columns
+    return "-" * max(10, min(columns - 1, 60))
 
 
 def _retry_delay_s(attempt: int) -> float:
@@ -327,7 +333,7 @@ class MapsScraper:
                         exc,
                     )
                     # Visual boundary between attempts' progress output.
-                    print("----", file=sys.stderr)
+                    print(_attempt_separator(), file=sys.stderr)
                     # Jittered backoff to ride out limited-view bursts
                     # instead of hammering Google on a fixed cadence.
                     time.sleep(_retry_delay_s(attempt))
@@ -628,8 +634,31 @@ class MapsScraper:
             pass
         return False
 
+    def _spot_review_total(self, page):
+        """Header review count, or None when it cannot be parsed.
+
+        Small spots finish in one or two batches; waiting out the stall
+        limit after every review is already in the DOM is pure delay.
+        """
+        try:
+            header = page.locator(f"div.{CSS_SELECTORS['SPOT_HEADER']}")
+            if header.count() == 0:
+                return None
+            total_loc = header.locator(f"div.{CSS_SELECTORS['TOTAL_REVIEWS']}")
+            if total_loc.count() == 0:
+                return None
+            text = total_loc.first.inner_text(timeout=2000)
+        except Exception:
+            return None
+        match = REVIEW_COUNT_RE.search(text)
+        if not match:
+            return None
+        try:
+            return int(match.group(1).replace(",", ""))
+        except ValueError:
+            return None
+
     def _scroll_reviews(self, page, progress=None):
-        logger.info("Scrolling review list dynamically...")
         card_sel = f".{CSS_SELECTORS['REVIEW_CARD']}"
         stall_limit = BROWSER_CONFIG["SCROLL_STALL_LIMIT"]
         sleep_s = BROWSER_CONFIG["SCROLL_SLEEP_S"]
@@ -638,12 +667,23 @@ class MapsScraper:
         target = self.target
         if progress is None:
             progress = self._make_progress(1, 1)
+        if not progress.enabled:
+            logger.info("Scrolling review list dynamically...")
 
         try:
             pane = self._find_scrollable_pane(page)
             if pane is None:
+                if progress.enabled:
+                    # Close the "Opening Google Maps..." status line first.
+                    print(file=sys.stderr)
                 logger.warning("Scrollable reviews pane not found.")
                 return 0
+
+            # Stop at whichever comes first: the requested sample or the
+            # spot's own review count. Without this, a 36-review spot keeps
+            # scrolling through the full stall window after card 36.
+            spot_total = self._spot_review_total(page)
+            goal = target if not spot_total else min(target, spot_total)
 
             # Draw the first frame before scrolling begins, so the bar
             # (and the attempt label) is visible as soon as the crawl
@@ -661,13 +701,19 @@ class MapsScraper:
                 except Exception:
                     prev_count = 0
 
-                # Reached the desired sample size: done.
-                if prev_count >= target:
-                    completion = (
-                        "Reached target: %d reviews (target %d).",
-                        prev_count,
-                        target,
-                    )
+                # Reached the sample size, or the spot has no more reviews.
+                if prev_count >= goal:
+                    if goal < target:
+                        completion = (
+                            "Reached the spot's total: %d reviews.",
+                            prev_count,
+                        )
+                    else:
+                        completion = (
+                            "Reached target: %d reviews (target %d).",
+                            prev_count,
+                            target,
+                        )
                     break
 
                 # Re-resolve the pane periodically, after stalls, or after
@@ -741,10 +787,13 @@ class MapsScraper:
             # Close the bar line before any log: logging would otherwise
             # append to the frame ("72/210 (34%)INFO: Scrolling done...").
             progress.finish()
-            if completion is not None:
+            if completion is not None and not progress.enabled:
                 logger.info(*completion)
             min_expected = BROWSER_CONFIG["MIN_EXPECTED_REVIEWS"]
-            if 0 < final < min_expected:
+            # A spot with fewer reviews than min_expected is complete, not
+            # a slow load; only warn when the DOM is short of what exists.
+            expected = min_expected if not spot_total else min(min_expected, spot_total)
+            if 0 < final < expected:
                 logger.warning(
                     "Only %d reviews loaded (expected more). Page may have loaded "
                     "slowly or Maps rate-limited this run; try again.",

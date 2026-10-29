@@ -189,6 +189,20 @@ def run_once(
         print(f"Completed in {time.monotonic() - started:.1f}s.", file=sys.stderr)
 
 
+def _use_progress_bar(verbose: bool) -> bool:
+    """The bar only owns stderr when it is a TTY and logs are not wanted.
+
+    --verbose keeps debug logs readable; piped output keeps the periodic
+    "... loaded N reviews" lines instead of carriage-return frames.
+    """
+    if verbose:
+        return False
+    try:
+        return bool(sys.stderr.isatty())
+    except Exception:
+        return False
+
+
 def _scrape_and_report(
     url: str,
     *,
@@ -199,10 +213,18 @@ def _scrape_and_report(
     verbose: bool,
     scraper_factory: ScraperFactory,
 ) -> int:
-    print("Validating URL...", file=sys.stderr)
+    bar_mode = _use_progress_bar(verbose)
+    if not bar_mode:
+        print("Validating URL...", file=sys.stderr)
     _auth_hint(auth_state)
+    if bar_mode:
+        # No newline: the first bar frame starts with \r and overwrites
+        # this status line, so the crawl shows only the bar. (Saving and
+        # restoring the cursor is unreliable once output scrolls.)
+        print("Opening Google Maps...", end="", flush=True, file=sys.stderr)
     try:
-        print(f"Initializing scraper for: {url}", file=sys.stderr)
+        if not bar_mode:
+            print(f"Initializing scraper for: {url}", file=sys.stderr)
         kwargs: dict[str, Any] = {"target_reviews": target}
         if auth_state:
             kwargs["auth_state"] = auth_state
@@ -211,9 +233,13 @@ def _scrape_and_report(
             kwargs["progress_enabled"] = False
         html_content = scraper_factory(url, **kwargs).fetch_html()
     except PermanentScrapeError as exc:
+        if bar_mode:
+            print(file=sys.stderr)  # close the status line
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_BAD_URL
     except Exception as exc:
+        if bar_mode:
+            print(file=sys.stderr)  # close the status line
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_SCRAPE_FAILED
 

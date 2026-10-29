@@ -5,7 +5,7 @@ CLI tool that scrapes Google Maps reviews for a place URL, then filters out low-
 ## How it works
 
 1. `cli.py` validates the URL (a `/maps/place/` page or Maps short link — search-list URLs are rejected before any browser launches), runs `MapsScraper.fetch_html()`, then `ReviewAnalyzer`, and reports wall-clock time on stderr.
-2. `scraper.py` uses Playwright (headless Chromium) to open the place page, click the Reviews tab, filter hotel tabs to Google-only reviews, auto-scroll to load review cards, and return page HTML. A saved Google session (`--login`) is loaded when present; anonymous sessions only see ~5 reviews. Transient failures (anti-bot limited view, render flakes) retry with backoff; deterministic failures raise immediately.
+2. `scraper.py` uses Playwright (headless Chromium) to open the place page, click the Reviews tab, filter hotel tabs to Google-only reviews, auto-scroll to load review cards, and return page HTML. Scrolling stops at `--target` or the spot's own review count, whichever is smaller, so small spots finish immediately instead of waiting out the stall window. A saved Google session (`--login`) is loaded when present; anonymous sessions only see ~5 reviews. Transient failures (anti-bot limited view, render flakes) retry with backoff; deterministic failures raise immediately.
 3. `analyzer.py` parses with BeautifulSoup:
    - Spot summary: name, rating, total reviews
    - Per-review: star rating + reviewer review count
@@ -94,10 +94,12 @@ Exit codes: `0` success, `1` scrape/analysis failure, `2` bad URL.
 
 While reviews load, a single-line progress bar (`Loading reviews [███░░░] 120/210 (57%)`)
 is drawn on stderr as soon as scrolling starts and redrawn each time another
-batch arrives. It appears only when stderr is a TTY, fits the terminal width
-(so the redraw never wraps), restarts per retry attempt (`----` separates
-attempts), and is replaced with periodic log lines under `--verbose` or when
-output is piped (`--json` output stays clean).
+batch arrives. It appears only when stderr is a TTY and fits the terminal width
+(so the redraw never wraps). Setup chatter (`Validating URL...`,
+`Initializing scraper...`) is hidden and completion logs are suppressed while
+the bar owns the line, leaving just the bar; a dash rule (up to 60 columns)
+separates retry attempts. Under `--verbose` or piped output the bar is replaced
+with the usual log lines (`--json` stdout stays clean either way).
 
 ### Signed-in sessions (`--login`)
 

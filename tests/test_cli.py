@@ -226,6 +226,54 @@ def _run(url="https://www.google.com/maps/place/X", factory=None, **kwargs):
     return run_once(url, scraper_factory=factory, **opts)
 
 
+def test_tty_run_hides_setup_lines_behind_one_status_line(monkeypatch, capsys):
+    """The bar overwrites the status line, so no setup chatter is left."""
+    seen = {}
+
+    class FakeScraper:
+        def __init__(self, url, target_reviews=None, **kwargs):
+            seen["kwargs"] = kwargs
+
+        def fetch_html(self):
+            return (FIXTURES / "restaurant.html").read_text(encoding="utf-8")
+
+    monkeypatch.setattr(main, "_use_progress_bar", lambda verbose: True)
+    assert _run(factory=FakeScraper) == 0
+    err = capsys.readouterr().err
+    assert "Opening Google Maps..." in err
+    assert "Validating URL..." not in err
+    assert "Initializing scraper for:" not in err
+    assert "clear_startup_lines" not in seen["kwargs"]
+
+
+def test_tty_error_closes_the_status_line(monkeypatch, capsys):
+    monkeypatch.setattr(main, "_use_progress_bar", lambda verbose: True)
+    code = _run(factory=_fixture_factory(error=PermanentScrapeError("no Google")))
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "Opening Google Maps...\n" in err
+    assert "Error: no Google" in err
+
+
+def test_non_tty_run_keeps_setup_lines(monkeypatch, capsys):
+    seen = {}
+
+    class FakeScraper:
+        def __init__(self, url, target_reviews=None):
+            seen["kwargs"] = "no bar kwargs"
+
+        def fetch_html(self):
+            return (FIXTURES / "restaurant.html").read_text(encoding="utf-8")
+
+    monkeypatch.setattr(main, "_use_progress_bar", lambda verbose: False)
+    assert _run(factory=FakeScraper) == 0
+    err = capsys.readouterr().err
+    assert seen["kwargs"] == "no bar kwargs"
+    assert "Validating URL..." in err
+    assert "Initializing scraper for:" in err
+    assert "Opening Google Maps..." not in err
+
+
 def test_run_once_json_stdout_is_pure_json(monkeypatch, capsys):
     """Diagnostics go to stderr; stdout parses as JSON (pipeable)."""
     code = _run(factory=_fixture_factory("restaurant.html"))

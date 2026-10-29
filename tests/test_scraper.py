@@ -6,6 +6,7 @@ stubbing _fetch_once, and _locate is exercised with a fake page.
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -390,7 +391,8 @@ class _RecordingProgress:
 
     def __init__(self, total, *, enabled=None, label="Loading reviews"):
         self.total = total
-        self.enabled = enabled
+        # Match ReviewProgress: None resolves to "bar on" (TTY).
+        self.enabled = True if enabled is None else enabled
         self.label = label
         self.updates = []
         self.finished = 0
@@ -473,7 +475,117 @@ def test_missing_pane_finishes_cleanly(monkeypatch):
     assert progress.finished == 1
 
 
+class _HeaderTextPage:
+    """Fake page/summary header exposing a review-count string."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def locator(self, sel):
+        return self
+
+    def count(self):
+        return 1
+
+    @property
+    def first(self):
+        return self
+
+    def inner_text(self, timeout=None):
+        return self.text
+
+
+def test_spot_total_parses_the_header_count():
+    scraper = MapsScraper(PLACE)
+    assert scraper._spot_review_total(_HeaderTextPage("4.6 (7,904 reviews)")) == 7904
+    assert scraper._spot_review_total(_HeaderTextPage("5.0 (12 đánh giá)")) == 12
+    assert scraper._spot_review_total(_HeaderTextPage("no count here")) is None
+
+
+def test_spot_total_uses_the_class_selector(monkeypatch):
+    """The registry value is a bare class; a tag selector would miss it."""
+    seen = []
+
+    class _Recording(_HeaderTextPage):
+        def locator(self, sel):
+            seen.append(sel)
+            return self
+
+    assert MapsScraper(PLACE)._spot_review_total(_Recording("6 reviews")) == 6
+    assert "div.jANrlb" in seen
+
+
+def test_scroll_stops_once_the_spot_total_is_loaded(monkeypatch):
+    scraper, page = _scroll_scraper(monkeypatch, [36, 100], target=210)
+    monkeypatch.setattr(MapsScraper, "_spot_review_total", lambda self, p: 36)
+    assert scraper._scroll_reviews(page) == 36
+    assert _RecordingProgress.instances[-1].updates == [0, 36]
+    assert page.current == 36  # the extra 100 was never fetched
+
+
+def test_scroll_still_targets_when_the_spot_is_larger(monkeypatch):
+    scraper, page = _scroll_scraper(monkeypatch, [100, 110], target=210)
+    monkeypatch.setattr(MapsScraper, "_spot_review_total", lambda self, p: 500)
+    assert scraper._scroll_reviews(page) == 210
+    assert _RecordingProgress.instances[-1].updates == [0, 100, 210]
+
+
+def test_scroll_without_a_spot_total_falls_back_to_target(monkeypatch):
+    scraper, page = _scroll_scraper(monkeypatch, [100, 110], target=210)
+    monkeypatch.setattr(MapsScraper, "_spot_review_total", lambda self, p: None)
+    assert scraper._scroll_reviews(page) == 210
+
+
+def test_no_short_sample_warning_for_a_small_spot(monkeypatch, caplog):
+    """A 6-review spot matching its header total is complete, not slow."""
+    scraper, page = _scroll_scraper(monkeypatch, [6], target=210)
+    monkeypatch.setattr(MapsScraper, "_spot_review_total", lambda self, p: 6)
+    with caplog.at_level(logging.WARNING):
+        scraper._scroll_reviews(page)
+    assert "Only 6 reviews loaded" not in caplog.text
+
+
+def test_short_sample_warning_fires_for_a_real_shortfall(monkeypatch, caplog):
+    scraper, page = _scroll_scraper(monkeypatch, [6, 0, 0, 0, 0, 0], target=210)
+    monkeypatch.setattr(MapsScraper, "_spot_review_total", lambda self, p: 36)
+    with caplog.at_level(logging.WARNING):
+        scraper._scroll_reviews(page)
+    assert "Only 6 reviews loaded" in caplog.text
+
+
+def test_bar_mode_hides_setup_and_completion_logs(monkeypatch, caplog):
+    """Any log during the crawl scrolls the bar away; keep the bar alone."""
+    scraper, page = _scroll_scraper(monkeypatch, [50, 0, 0, 0, 0, 0])
+    with caplog.at_level(logging.INFO):
+        scraper._scroll_reviews(page)
+    messages = [r.getMessage() for r in caplog.records]
+    assert not any(m.startswith("Scrolling review list") for m in messages)
+    assert not any(m.startswith("Scrolling done") for m in messages)
+
+
+def test_piped_mode_keeps_setup_and_completion_logs(monkeypatch, caplog):
+    scraper, page = _scroll_scraper(monkeypatch, [50, 0, 0, 0, 0, 0])
+    scraper.progress_enabled = False
+    with caplog.at_level(logging.INFO):
+        scraper._scroll_reviews(page)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any(m.startswith("Scrolling review list") for m in messages)
+    assert any(m.startswith("Scrolling done") for m in messages)
+
+
+def _fake_terminal(monkeypatch, columns):
+    monkeypatch.setattr(
+        "gmaps_review_filter.scraper.shutil.get_terminal_size",
+        lambda fallback=None: os.terminal_size((columns, 24)),
+    )
+
+
+def _separator_lines(err):
+    return [line for line in err.splitlines() if line and set(line) == {"-"}]
+
+
 def test_retry_prints_separator_between_attempts(monkeypatch, capsys):
+    _fake_terminal(monkeypatch, 80)
     calls = _run_fetch(
         monkeypatch,
         [TransientScrapeError("a"), TransientScrapeError("b"), ("<html>", 5)],
@@ -481,13 +593,25 @@ def test_retry_prints_separator_between_attempts(monkeypatch, capsys):
     assert MapsScraper(PLACE).fetch_html() == "<html>"
     assert len(calls) == 3
     err = capsys.readouterr().err
-    assert err.count("----") == 2
+    separators = _separator_lines(err)
+    assert separators == ["-" * 60, "-" * 60]
+
+
+def test_separator_fits_narrow_terminal(monkeypatch, capsys):
+    _fake_terminal(monkeypatch, 40)
+    _run_fetch(
+        monkeypatch,
+        [TransientScrapeError("a"), ("<html>", 5)],
+    )
+    MapsScraper(PLACE).fetch_html()
+    separators = _separator_lines(capsys.readouterr().err)
+    assert separators == ["-" * 39]
 
 
 def test_no_separator_when_first_attempt_succeeds(monkeypatch, capsys):
     _run_fetch(monkeypatch, [("<html>", 5)])
     MapsScraper(PLACE).fetch_html()
-    assert "----" not in capsys.readouterr().err
+    assert not _separator_lines(capsys.readouterr().err)
 
 
 def test_scroll_finishes_bar_before_completion_logs(monkeypatch):
@@ -511,6 +635,8 @@ def test_scroll_finishes_bar_before_completion_logs(monkeypatch):
             events.append(record.getMessage())
 
     scraper.progress_factory = _OrderedProgress
+    # Piped/verbose mode logs the completion line (bar mode hides it).
+    scraper.progress_enabled = False
     logger = logging_mod.getLogger("gmaps_review_filter.scraper")
     collector = _Collector()
     old_level = logger.level
