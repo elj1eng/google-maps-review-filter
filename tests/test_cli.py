@@ -9,12 +9,9 @@ import sys
 import gmaps_review_filter.cli as main
 from gmaps_review_filter.cli import build_parser, run_once
 from gmaps_review_filter.config import BROWSER_CONFIG
-from gmaps_review_filter.scraper import (
-    MapsScraper,
-    PermanentScrapeError,
-    _matches_any,
-    detect_lang,
-)
+from gmaps_review_filter.errors import PermanentScrapeError
+from gmaps_review_filter.locale import detect_lang, matches_any
+from gmaps_review_filter.scraper import MapsScraper
 from tests.test_analyzer import FIXTURES
 
 
@@ -153,10 +150,10 @@ def test_detect_lang():
 
 
 def test_matches_any_english_and_vietnamese():
-    assert _matches_any("Reviews", ("review",))
-    assert _matches_any("Bài đánh giá", ("đánh giá", "review"))
-    assert not _matches_any("Most relevant", ("review",))
-    assert not _matches_any("", ("review",))
+    assert matches_any("Reviews", ("review",))
+    assert matches_any("Bài đánh giá", ("đánh giá", "review"))
+    assert not matches_any("Most relevant", ("review",))
+    assert not matches_any("", ("review",))
 
 
 def _fixture_factory(html_name=None, error=None):

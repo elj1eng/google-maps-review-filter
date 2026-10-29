@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from gmaps_review_filter.analyzer import ReviewAnalyzer
+from gmaps_review_filter.auth import login_and_save_state
 from gmaps_review_filter.config import BROWSER_CONFIG, THRESHOLDS
 from gmaps_review_filter.errors import PermanentScrapeError
 from gmaps_review_filter.report import format_human, to_dict
-from gmaps_review_filter.scraper import MapsScraper, login_and_save_state
+from gmaps_review_filter.scraper import MapsScraper
 from gmaps_review_filter.ui import Terminal
 
 EXIT_OK = 0

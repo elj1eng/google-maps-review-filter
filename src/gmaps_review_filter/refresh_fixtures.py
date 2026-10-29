@@ -41,7 +41,7 @@ SPOTS = {
 }
 
 
-def trim(html, url, indices):
+def trim(html: str, url: str, indices: list[int]) -> str:
     soup = BeautifulSoup(html, "html.parser")
     parts = [f"<!-- provenance: trimmed from {url} (refreshed) -->"]
     header = soup.find("div", class_=CSS_SELECTORS["SPOT_HEADER"])
@@ -56,7 +56,7 @@ def trim(html, url, indices):
     return "<html><body>\n" + "\n".join(parts) + "\n</body></html>"
 
 
-def main():
+def main() -> None:
     for name, (url, indices) in SPOTS.items():
         print(f"scraping {name} ...", flush=True)
         html = MapsScraper(url).fetch_html()

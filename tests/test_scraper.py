@@ -1,10 +1,9 @@
-"""Offline tests for scraper policy: URL gate, retry taxonomy, registry.
+"""Offline tests for scraper orchestration: URL gate, retry, selectors.
 
 No browser is launched: the gate is pure URL parsing, retry is driven by
-stubbing _fetch_once, and _locate is exercised with a fake page.
+stubbing _fetch_once, and the progress factory is a recording fake.
 """
 
-import json
 import logging
 import os
 import time
@@ -13,21 +12,15 @@ from pathlib import Path
 import pytest
 
 from gmaps_review_filter.config import BROWSER_CONFIG
+from gmaps_review_filter.errors import PermanentScrapeError, TransientScrapeError
 from gmaps_review_filter.scraper import (
     MapsScraper,
-    PermanentScrapeError,
-    TransientScrapeError,
     _pre_reload_delay_s,
     _retry_delay_s,
-    _wait_for_stable_count,
-    has_google_session,
     is_throttled_stub,
-    load_storage_cookies,
-    resolve_auth_state,
-    save_storage_state,
-    validate_place_url,
 )
 from gmaps_review_filter.selectors import CSS_SELECTORS, SELECTOR_META
+from gmaps_review_filter.urls import validate_place_url
 
 PLACE = "https://www.google.com/maps/place/Peter+Luger+Steak+House/@40.7,-73.9,17z"
 
@@ -56,50 +49,6 @@ def test_gate_rejects_non_maps_urls():
         validate_place_url("")
 
 
-# --- settle-wait policy (offline: scripted counters, no browser) ---
-
-
-def test_settle_returns_when_count_stabilizes():
-    counts = iter([0, 0, 3, 3, 3])
-    started = time.monotonic()
-    result = _wait_for_stable_count(
-        lambda: next(counts), polls=3, interval_s=0, timeout_s=5
-    )
-    assert result == 3
-    assert time.monotonic() - started < 5  # returned early, not at the cap
-
-
-def test_settle_flat_from_start_polls_exactly_n_times():
-    calls = []
-
-    def flat():
-        calls.append(1)
-        return 5
-
-    assert _wait_for_stable_count(flat, polls=3, interval_s=0, timeout_s=5) == 5
-    assert len(calls) == 3
-
-
-def test_settle_caps_on_ever_growing_counts():
-    state = {"n": 0}
-
-    def growing():
-        state["n"] += 1
-        return state["n"]
-
-    started = time.monotonic()
-    result = _wait_for_stable_count(growing, polls=3, interval_s=0.01, timeout_s=0.2)
-    assert result > 3  # never stabilized: kept polling, not an early return
-    assert result == state["n"]  # last observed value, no raise
-    assert time.monotonic() - started >= 0.15  # actually waited for the cap
-
-
-def test_settle_defaults_come_from_config():
-    assert BROWSER_CONFIG["STABLE_POLLS"] == 3
-    assert BROWSER_CONFIG["STABLE_INTERVAL_S"] == 0.5
-    assert BROWSER_CONFIG["STABLE_TIMEOUT_S"] == 8
-
-
 # --- stub guard: loaded sample vs header total (offline literals) ---
 
 
@@ -116,24 +65,6 @@ def test_stub_guard_accepts_full_sample_or_small_spot():
 
 def test_stub_guard_unknown_total_never_retries_blind():
     assert not is_throttled_stub(3, 210, None)
-
-
-# --- title gate: unresolvable URLs fail fast as permanent ---
-
-
-class _NoTitlePage:
-    def wait_for_selector(self, *args, **kwargs):
-        raise TimeoutError("timeout")
-
-
-def test_wait_for_title_raises_permanent_not_runtime():
-    """Linguistic/unresolvable URLs exit 2 (bad URL), not 1.
-
-    Bare /maps/place/Name URLs resolve to nothing: no h1 ever renders.
-    That is a deterministic URL problem, not a scrape flake.
-    """
-    with pytest.raises(PermanentScrapeError, match="never showed a place title"):
-        MapsScraper._wait_for_title(_NoTitlePage())
 
 
 # --- retry taxonomy ---
@@ -241,6 +172,9 @@ def test_pre_reload_delay_adds_jitter(monkeypatch):
     assert _pre_reload_delay_s() == BROWSER_CONFIG["PRE_RELOAD_DELAY_S"] + 1.0
 
 
+# --- fetch_once: conditional reload + saved session ---
+
+
 class _FetchOncePage:
     def __init__(self):
         self.reloads = 0
@@ -272,13 +206,11 @@ def _stub_fetch_once(monkeypatch, page, limited_sequence):
     monkeypatch.setattr(
         scraper_mod, "ScrapeSession", lambda *a, **k: _FetchOnceSession(page)
     )
-    monkeypatch.setattr(MapsScraper, "_wait_for_title", lambda self, p: None)
+    monkeypatch.setattr(scraper_mod, "wait_for_title", lambda p: None)
     seq = list(limited_sequence)
-    monkeypatch.setattr(MapsScraper, "_is_limited_view", lambda self, p: seq.pop(0))
+    monkeypatch.setattr(scraper_mod, "is_limited_view", lambda p: seq.pop(0))
     monkeypatch.setattr(MapsScraper, "_open_reviews_tab", lambda self, p: True)
-    monkeypatch.setattr(
-        MapsScraper, "_scroll_reviews", lambda self, p, progress=None: 5
-    )
+    monkeypatch.setattr(scraper_mod, "scroll_reviews", lambda p, target, progress: 5)
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
 
@@ -296,68 +228,6 @@ def test_fetch_once_reloads_only_when_limited(monkeypatch):
     assert page.reloads == 1
 
 
-# --- saved Google session (login flow, offline) ---
-
-
-def test_login_url_is_the_google_sign_in_page():
-    assert BROWSER_CONFIG["LOGIN_URL"].startswith("https://accounts.google.com/")
-
-
-def test_has_google_session_detects_auth_cookies():
-    assert has_google_session([{"name": "SID", "value": "abc"}])
-    assert has_google_session([{"name": "SAPISID", "value": "abc"}])
-    assert not has_google_session([{"name": "NID", "value": "abc"}])
-    assert not has_google_session([{"name": "SID", "value": ""}])
-    assert not has_google_session([])
-
-
-def test_resolve_auth_state_missing_file_is_none(tmp_path):
-    assert resolve_auth_state(str(tmp_path / "nope.json")) is None
-
-
-def test_resolve_auth_state_uses_explicit_path(tmp_path):
-    state = tmp_path / "auth.json"
-    state.write_text("{}", encoding="utf-8")
-    assert resolve_auth_state(str(state)) == str(state)
-
-
-def test_resolve_auth_state_falls_back_to_config(tmp_path, monkeypatch):
-    state = tmp_path / "auth.json"
-    state.write_text("{}", encoding="utf-8")
-    monkeypatch.setitem(BROWSER_CONFIG, "AUTH_STATE_PATH", str(state))
-    assert resolve_auth_state(None) == str(state)
-
-
-def test_save_storage_state_writes_owner_only_file(tmp_path):
-    target = tmp_path / "nested" / "auth.json"
-    saved = save_storage_state(_RecordingContext(), target)
-    assert saved == str(target)
-    assert target.read_text(encoding="utf-8") == "{}"
-    assert target.stat().st_mode & 0o777 == 0o600
-
-
-class _RecordingContext:
-    def storage_state(self, path):
-        Path(path).write_text("{}", encoding="utf-8")
-
-
-def test_load_storage_cookies_valid_file(tmp_path):
-    state = tmp_path / "auth.json"
-    cookies = [{"name": "SID", "value": "abc", "domain": ".google.com", "path": "/"}]
-    state.write_text(json.dumps({"cookies": cookies, "origins": []}), encoding="utf-8")
-    assert load_storage_cookies(state) == cookies
-
-
-def test_load_storage_cookies_bad_files_are_empty(tmp_path):
-    corrupt = tmp_path / "corrupt.json"
-    corrupt.write_text("not json", encoding="utf-8")
-    assert load_storage_cookies(corrupt) == []
-    assert load_storage_cookies(tmp_path / "missing.json") == []
-    shape = tmp_path / "shape.json"
-    shape.write_text(json.dumps({"cookies": "nope"}), encoding="utf-8")
-    assert load_storage_cookies(shape) == []
-
-
 def test_scraper_passes_saved_state_to_session(tmp_path, monkeypatch):
     state = tmp_path / "auth.json"
     state.write_text("{}", encoding="utf-8")
@@ -371,206 +241,17 @@ def test_scraper_passes_saved_state_to_session(tmp_path, monkeypatch):
     import gmaps_review_filter.scraper as scraper_mod
 
     monkeypatch.setattr(scraper_mod, "ScrapeSession", _CapturingSession)
-    monkeypatch.setattr(MapsScraper, "_wait_for_title", lambda self, p: None)
-    monkeypatch.setattr(MapsScraper, "_is_limited_view", lambda self, p: False)
+    monkeypatch.setattr(scraper_mod, "wait_for_title", lambda p: None)
+    monkeypatch.setattr(scraper_mod, "is_limited_view", lambda p: False)
     monkeypatch.setattr(MapsScraper, "_open_reviews_tab", lambda self, p: True)
-    monkeypatch.setattr(
-        MapsScraper, "_scroll_reviews", lambda self, p, progress=None: 5
-    )
+    monkeypatch.setattr(scraper_mod, "scroll_reviews", lambda p, target, progress: 5)
     monkeypatch.setattr(time, "sleep", lambda s: None)
 
     MapsScraper(PLACE, auth_state=str(state))._fetch_once()
     assert seen["state"] == str(state)
 
 
-# --- scroll progress policy (fake page, no browser) ---
-
-
-class _RecordingProgress:
-    instances = []
-
-    def __init__(self, total, *, enabled=None, label="Loading reviews"):
-        self.total = total
-        # Match ReviewProgress: None resolves to "bar on" (TTY).
-        self.enabled = True if enabled is None else enabled
-        self.label = label
-        self.updates = []
-        self.finished = 0
-        _RecordingProgress.instances.append(self)
-
-    def update(self, loaded):
-        self.updates.append(loaded)
-
-    def finish(self):
-        # Mirrors ReviewProgress: finish is idempotent.
-        if self.finished:
-            return
-        self.finished += 1
-
-
-class _ScrollPage:
-    """Fake page whose card count grows inside wait_for_function."""
-
-    def __init__(self, growth):
-        self.current = 0
-        self._growth = list(growth)
-        self.keyboard = self
-
-    def locator(self, sel):
-        return self
-
-    def count(self):
-        return self.current
-
-    def nth(self, i):
-        return self
-
-    def scroll_into_view_if_needed(self, timeout=None):
-        pass
-
-    def wait_for_function(self, *args, **kwargs):
-        if self._growth:
-            self.current += self._growth.pop(0)
-
-    def press(self, key):
-        pass
-
-
-def _scroll_scraper(monkeypatch, growth, *, target=210):
-    page = _ScrollPage(growth)
-    monkeypatch.setattr(MapsScraper, "_find_scrollable_pane", lambda self, p: object())
-    monkeypatch.setattr(MapsScraper, "_wheel_scroll", lambda self, p, pane, px: True)
-    monkeypatch.setattr(time, "sleep", lambda s: None)
-    _RecordingProgress.instances = []
-    scraper = MapsScraper(
-        PLACE, target_reviews=target, progress_factory=_RecordingProgress
-    )
-    return scraper, page
-
-
-def test_scroll_reports_each_growth_then_finishes(monkeypatch):
-    scraper, page = _scroll_scraper(monkeypatch, [100, 110])
-    final = scraper._scroll_reviews(page)
-    progress = _RecordingProgress.instances[-1]
-    assert final == 210
-    assert progress.updates == [0, 100, 210]
-    assert progress.finished == 1
-
-
-def test_scroll_finishes_without_drawing_when_it_stalls(monkeypatch):
-    scraper, page = _scroll_scraper(monkeypatch, [50, 0, 0, 0, 0, 0])
-    final = scraper._scroll_reviews(page)
-    progress = _RecordingProgress.instances[-1]
-    assert final == 50
-    assert progress.updates == [0, 50]
-    assert progress.finished == 1
-
-
-def test_missing_pane_finishes_cleanly(monkeypatch):
-    scraper, page = _scroll_scraper(monkeypatch, [])
-    monkeypatch.setattr(MapsScraper, "_find_scrollable_pane", lambda self, p: None)
-    assert scraper._scroll_reviews(page) == 0
-    progress = _RecordingProgress.instances[-1]
-    assert progress.updates == []
-    assert progress.finished == 1
-
-
-class _HeaderTextPage:
-    """Fake page/summary header exposing a review-count string."""
-
-    def __init__(self, text):
-        self.text = text
-
-    def locator(self, sel):
-        return self
-
-    def count(self):
-        return 1
-
-    @property
-    def first(self):
-        return self
-
-    def inner_text(self, timeout=None):
-        return self.text
-
-
-def test_spot_total_parses_the_header_count():
-    scraper = MapsScraper(PLACE)
-    assert scraper._spot_review_total(_HeaderTextPage("4.6 (7,904 reviews)")) == 7904
-    assert scraper._spot_review_total(_HeaderTextPage("5.0 (12 đánh giá)")) == 12
-    assert scraper._spot_review_total(_HeaderTextPage("no count here")) is None
-
-
-def test_spot_total_uses_the_class_selector(monkeypatch):
-    """The registry value is a bare class; a tag selector would miss it."""
-    seen = []
-
-    class _Recording(_HeaderTextPage):
-        def locator(self, sel):
-            seen.append(sel)
-            return self
-
-    assert MapsScraper(PLACE)._spot_review_total(_Recording("6 reviews")) == 6
-    assert "div.jANrlb" in seen
-
-
-def test_scroll_stops_once_the_spot_total_is_loaded(monkeypatch):
-    scraper, page = _scroll_scraper(monkeypatch, [36, 100], target=210)
-    monkeypatch.setattr(MapsScraper, "_spot_review_total", lambda self, p: 36)
-    assert scraper._scroll_reviews(page) == 36
-    assert _RecordingProgress.instances[-1].updates == [0, 36]
-    assert page.current == 36  # the extra 100 was never fetched
-
-
-def test_scroll_still_targets_when_the_spot_is_larger(monkeypatch):
-    scraper, page = _scroll_scraper(monkeypatch, [100, 110], target=210)
-    monkeypatch.setattr(MapsScraper, "_spot_review_total", lambda self, p: 500)
-    assert scraper._scroll_reviews(page) == 210
-    assert _RecordingProgress.instances[-1].updates == [0, 100, 210]
-
-
-def test_scroll_without_a_spot_total_falls_back_to_target(monkeypatch):
-    scraper, page = _scroll_scraper(monkeypatch, [100, 110], target=210)
-    monkeypatch.setattr(MapsScraper, "_spot_review_total", lambda self, p: None)
-    assert scraper._scroll_reviews(page) == 210
-
-
-def test_no_short_sample_warning_for_a_small_spot(monkeypatch, caplog):
-    """A 6-review spot matching its header total is complete, not slow."""
-    scraper, page = _scroll_scraper(monkeypatch, [6], target=210)
-    monkeypatch.setattr(MapsScraper, "_spot_review_total", lambda self, p: 6)
-    with caplog.at_level(logging.WARNING):
-        scraper._scroll_reviews(page)
-    assert "Only 6 reviews loaded" not in caplog.text
-
-
-def test_short_sample_warning_fires_for_a_real_shortfall(monkeypatch, caplog):
-    scraper, page = _scroll_scraper(monkeypatch, [6, 0, 0, 0, 0, 0], target=210)
-    monkeypatch.setattr(MapsScraper, "_spot_review_total", lambda self, p: 36)
-    with caplog.at_level(logging.WARNING):
-        scraper._scroll_reviews(page)
-    assert "Only 6 reviews loaded" in caplog.text
-
-
-def test_bar_mode_hides_setup_and_completion_logs(monkeypatch, caplog):
-    """Any log during the crawl scrolls the bar away; keep the bar alone."""
-    scraper, page = _scroll_scraper(monkeypatch, [50, 0, 0, 0, 0, 0])
-    with caplog.at_level(logging.INFO):
-        scraper._scroll_reviews(page)
-    messages = [r.getMessage() for r in caplog.records]
-    assert not any(m.startswith("Scrolling review list") for m in messages)
-    assert not any(m.startswith("Scrolling done") for m in messages)
-
-
-def test_piped_mode_keeps_setup_and_completion_logs(monkeypatch, caplog):
-    scraper, page = _scroll_scraper(monkeypatch, [50, 0, 0, 0, 0, 0])
-    scraper.progress_enabled = False
-    with caplog.at_level(logging.INFO):
-        scraper._scroll_reviews(page)
-    messages = [r.getMessage() for r in caplog.records]
-    assert any(m.startswith("Scrolling review list") for m in messages)
-    assert any(m.startswith("Scrolling done") for m in messages)
+# --- retry separator (Terminal) ---
 
 
 def _fake_terminal(monkeypatch, columns):
@@ -592,8 +273,7 @@ def test_retry_prints_separator_between_attempts(monkeypatch, capsys):
     )
     assert MapsScraper(PLACE).fetch_html() == "<html>"
     assert len(calls) == 3
-    err = capsys.readouterr().err
-    separators = _separator_lines(err)
+    separators = _separator_lines(capsys.readouterr().err)
     assert separators == ["-" * 60, "-" * 60]
 
 
@@ -614,68 +294,28 @@ def test_no_separator_when_first_attempt_succeeds(monkeypatch, capsys):
     assert not _separator_lines(capsys.readouterr().err)
 
 
-def test_scroll_finishes_bar_before_completion_logs(monkeypatch):
-    """The bar line must be closed before 'Scrolling done' is logged.
-
-    Otherwise the log is appended mid-bar: '72/210 (34%)INFO: ...'.
-    """
-    import logging as logging_mod
-
-    scraper, page = _scroll_scraper(monkeypatch, [50, 0, 0, 0, 0, 0])
-    events = []
-
-    class _OrderedProgress(_RecordingProgress):
-        def finish(self):
-            if not self.finished:
-                events.append("finish")
-            super().finish()
-
-    class _Collector(logging_mod.Handler):
-        def emit(self, record):
-            events.append(record.getMessage())
-
-    scraper.progress_factory = _OrderedProgress
-    # Piped/verbose mode logs the completion line (bar mode hides it).
-    scraper.progress_enabled = False
-    logger = logging_mod.getLogger("gmaps_review_filter.scraper")
-    collector = _Collector()
-    old_level = logger.level
-    logger.setLevel(logging_mod.INFO)
-    logger.addHandler(collector)
-    try:
-        scraper._scroll_reviews(page)
-    finally:
-        logger.removeHandler(collector)
-        logger.setLevel(old_level)
-
-    assert events.index("finish") < next(
-        i for i, e in enumerate(events) if e.startswith("Scrolling done")
-    )
+# --- progress factory wiring ---
 
 
-def test_scroll_does_not_log_redundant_finished_line(monkeypatch):
-    """The bar + 'Scrolling done' already state the count."""
-    import logging as logging_mod
+class _RecordingProgress:
+    instances = []
 
-    scraper, page = _scroll_scraper(monkeypatch, [50, 0, 0, 0, 0, 0])
-    messages = []
+    def __init__(self, total, *, enabled=None, label="Loading reviews"):
+        self.total = total
+        # Match ReviewProgress: None resolves to "bar on" (TTY).
+        self.enabled = True if enabled is None else enabled
+        self.label = label
+        self.updates = []
+        self.finished = 0
+        _RecordingProgress.instances.append(self)
 
-    class _Collector(logging_mod.Handler):
-        def emit(self, record):
-            messages.append(record.getMessage())
+    def update(self, loaded):
+        self.updates.append(loaded)
 
-    logger = logging_mod.getLogger("gmaps_review_filter.scraper")
-    collector = _Collector()
-    old_level = logger.level
-    logger.setLevel(logging_mod.INFO)
-    logger.addHandler(collector)
-    try:
-        scraper._scroll_reviews(page)
-    finally:
-        logger.removeHandler(collector)
-        logger.setLevel(old_level)
-
-    assert not any(m.startswith("Finished scrolling") for m in messages)
+    def finish(self):
+        if self.finished:
+            return
+        self.finished += 1
 
 
 def _progress_label_for(monkeypatch, attempt, attempts):
@@ -711,42 +351,6 @@ def test_progress_disabled_flag_is_forwarded(monkeypatch):
 
 
 # --- selector registry ---
-
-
-class _FakeLocator:
-    def __init__(self, sel, matches):
-        self.sel = sel
-        self._matches = matches
-
-    def count(self):
-        return self._matches
-
-
-class _FakePage:
-    def __init__(self, present):
-        self._present = set(present)
-
-    def locator(self, sel):
-        return _FakeLocator(sel, 1 if sel in self._present else 0)
-
-
-def test_locate_prefers_primary():
-    loc = MapsScraper._locate(_FakePage([CSS_SELECTORS["REVIEWS_TAB"]]), "REVIEWS_TAB")
-    assert loc.sel == CSS_SELECTORS["REVIEWS_TAB"]
-    assert loc.count() == 1
-
-
-def test_locate_uses_fallback():
-    fallback = SELECTOR_META["REVIEWS_TAB"]["fallbacks"][0]
-    loc = MapsScraper._locate(_FakePage([fallback]), "REVIEWS_TAB")
-    assert loc.sel == fallback
-    assert loc.count() == 1
-
-
-def test_locate_empty_returns_primary():
-    loc = MapsScraper._locate(_FakePage([]), "REVIEWS_TAB")
-    assert loc.sel == CSS_SELECTORS["REVIEWS_TAB"]
-    assert loc.count() == 0
 
 
 def test_refresh_fixtures_import_has_no_side_effects(monkeypatch):
