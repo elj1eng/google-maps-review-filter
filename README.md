@@ -92,8 +92,10 @@ Options:
 | `--verbose` | off | debug logging from the scraper |
 | `--login` | off | open the `accounts.google.com` sign-in page in a headed browser, then save the session |
 | `--auth PATH` | `~/.config/gmaps-filter/auth.json` | saved session file used for scraping |
+| `--version` | — | print the installed version and exit |
 
-Exit codes: `0` success, `1` scrape/analysis failure, `2` bad URL.
+Exit codes: `0` success, `1` scrape/analysis failure, `2` bad URL or invalid
+arguments (`--target` must be > 0, `--trust-threshold` >= 0).
 
 Human output is colored only when stdout is a TTY; piped output and
 `NO_COLOR=1` are plain text. `--json` emits schema v1:

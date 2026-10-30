@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Protocol
 
+from gmaps_review_filter import __version__
 from gmaps_review_filter.analyzer import ReviewAnalyzer
 from gmaps_review_filter.auth import login_and_save_state
 from gmaps_review_filter.config import DEFAULT_SETTINGS, Settings
@@ -48,22 +49,44 @@ def ensure_utf8_stdout() -> None:
         reconfigure(encoding="utf-8")
 
 
+def positive_int(value: str) -> int:
+    """argparse type: an integer strictly greater than zero."""
+    number = int(value)
+    if number <= 0:
+        raise argparse.ArgumentTypeError(f"must be greater than 0 (got {number})")
+    return number
+
+
+def non_negative_int(value: str) -> int:
+    """argparse type: an integer of zero or more."""
+    number = int(value)
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or greater (got {number})")
+    return number
+
+
 def build_parser(settings: Settings = DEFAULT_SETTINGS) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Scrape Google Maps reviews; split trusted vs low-activity."
+        prog="gmaps-filter",
+        description="Scrape Google Maps reviews; split trusted vs low-activity.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "url", nargs="?", help="Google Maps place URL (omit for interactive mode)"
     )
     parser.add_argument(
         "--target",
-        type=int,
+        type=positive_int,
         default=settings.target_reviews,
         help="reviews to load per spot (default: %(default)s)",
     )
     parser.add_argument(
         "--trust-threshold",
-        type=int,
+        type=non_negative_int,
         default=settings.min_reviews_for_trust,
         dest="trust_threshold",
         help="reviewers above this count as trusted (default: %(default)s)",

@@ -4,10 +4,16 @@ import json
 import logging
 import os
 import re
+import subprocess
 import sys
+import tomllib
 from dataclasses import replace
+from pathlib import Path
+
+import pytest
 
 import gmaps_review_filter.cli as main
+from gmaps_review_filter import __version__
 from gmaps_review_filter.cli import build_parser, run_once
 from gmaps_review_filter.config import DEFAULT_SETTINGS
 from gmaps_review_filter.errors import (
@@ -336,3 +342,48 @@ def test_run_once_empty_report_exits_scrape_failed(monkeypatch, capsys):
     code = _run(factory=_fixture_factory())
     assert code == 1
     assert "No review cards" in capsys.readouterr().err
+
+
+# --- argument validation / version ---
+
+
+def test_version_flag_prints_the_package_version(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        main.main(["--version"])
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out.strip() == f"gmaps-filter {__version__}"
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_target_must_be_positive(value):
+    with pytest.raises(SystemExit) as excinfo:
+        build_parser().parse_args(["--target", value])
+    assert excinfo.value.code == 2
+
+
+def test_trust_threshold_accepts_zero():
+    assert build_parser().parse_args(["--trust-threshold", "0"]).trust_threshold == 0
+
+
+def test_trust_threshold_rejects_negative():
+    with pytest.raises(SystemExit) as excinfo:
+        build_parser().parse_args(["--trust-threshold", "-1"])
+    assert excinfo.value.code == 2
+
+
+def test_version_matches_pyproject():
+    pyproject = tomllib.loads(
+        (Path(__file__).parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    assert pyproject["project"]["version"] == __version__
+
+
+def test_python_dash_m_entry_point_prints_version():
+    result = subprocess.run(
+        [sys.executable, "-m", "gmaps_review_filter", "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert result.stdout.strip() == f"gmaps-filter {__version__}"
