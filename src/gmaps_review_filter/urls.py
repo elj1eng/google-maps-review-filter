@@ -1,14 +1,25 @@
 """Place-URL validation, before any browser work."""
 
-import re
 import urllib.parse
 
 from gmaps_review_filter.errors import PermanentScrapeError
 
-# Hosts whose links resolve (via redirect) to a place page.
+# Registrable domains Google Maps serves. Locale-scoped: google.com and
+# google.com.vn (and any subdomain, e.g. maps.google.com), nothing else.
+# Suffix matching on "." + domain rejects lookalikes such as
+# google.evil.com and google.com.evil.com.
+GOOGLE_DOMAINS = ("google.com", "google.com.vn")
+
+# Short links that redirect to a place page.
 SHORT_HOSTS = ("maps.app.goo.gl", "goo.gl")
 
-_GOOGLE_HOST_RE = re.compile(r"(www\.)?google\.[a-z.]+")
+
+def is_google_host(host: str) -> bool:
+    """True for google.com / google.com.vn and their subdomains."""
+    host = host.lower().rstrip(".")
+    return any(
+        host == domain or host.endswith("." + domain) for domain in GOOGLE_DOMAINS
+    )
 
 
 def validate_place_url(url: str) -> str:
@@ -21,11 +32,13 @@ def validate_place_url(url: str) -> str:
     cleaned = (url or "").strip()
     try:
         parsed = urllib.parse.urlparse(cleaned)
+        host = (parsed.hostname or "").lower()
     except Exception as exc:
         raise PermanentScrapeError(f"not a valid URL ({exc})") from exc
-    host = parsed.netloc.lower()
-    if host in SHORT_HOSTS or _GOOGLE_HOST_RE.fullmatch(host or ""):
-        if "/maps/place/" in parsed.path or host in SHORT_HOSTS:
+    if host in SHORT_HOSTS:
+        return cleaned
+    if is_google_host(host):
+        if "/maps/place/" in parsed.path:
             return cleaned
         raise PermanentScrapeError(
             "URL is not a place page (expected /maps/place/). "

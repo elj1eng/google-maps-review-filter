@@ -20,33 +20,16 @@ from gmaps_review_filter.scraper import (
     is_throttled_stub,
 )
 from gmaps_review_filter.selectors import CSS_SELECTORS, SELECTOR_META
-from gmaps_review_filter.urls import validate_place_url
 
 PLACE = "https://www.google.com/maps/place/Peter+Luger+Steak+House/@40.7,-73.9,17z"
 
 
-# --- URL gate ---
-
-
-def test_gate_accepts_place_urls():
-    assert validate_place_url(PLACE) == PLACE
-    assert validate_place_url("https://www.google.co.uk/maps/place/X/@1,2,17z")
-    assert validate_place_url("https://google.com.vn/maps/place/X/@1,2,17z")
-    assert validate_place_url("https://maps.app.goo.gl/abc123")
+# --- URL gate (matrix lives in test_urls.py) ---
 
 
 def test_gate_rejects_search_list_without_browser():
     with pytest.raises(PermanentScrapeError):
         MapsScraper("https://www.google.com/maps/search/pizza+near+me")
-
-
-def test_gate_rejects_non_maps_urls():
-    with pytest.raises(PermanentScrapeError):
-        validate_place_url("https://example.com/maps/place/X")
-    with pytest.raises(PermanentScrapeError):
-        validate_place_url("not a url")
-    with pytest.raises(PermanentScrapeError):
-        validate_place_url("")
 
 
 # --- stub guard: loaded sample vs header total (offline literals) ---
