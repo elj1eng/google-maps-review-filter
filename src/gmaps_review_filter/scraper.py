@@ -18,7 +18,11 @@ from gmaps_review_filter.dom import (
     wait_for_stable_count,
     wait_for_title,
 )
-from gmaps_review_filter.errors import PermanentScrapeError, TransientScrapeError
+from gmaps_review_filter.errors import (
+    PermanentScrapeError,
+    RetriesExhaustedError,
+    TransientScrapeError,
+)
 from gmaps_review_filter.locale import matches_any
 from gmaps_review_filter.progress import ReviewProgress
 from gmaps_review_filter.scroll import scroll_reviews
@@ -141,9 +145,7 @@ class MapsScraper:
                     logger.warning(
                         "Attempt %d/%d: %s — giving up.", attempt, attempts, exc
                     )
-        raise RuntimeError(
-            f"Scrape failed after {attempts} attempts ({last_error}). Try again later."
-        )
+        raise RetriesExhaustedError(attempts, last_error)
 
     def _fetch_once(self, attempt: int = 1, attempts: int = 1) -> tuple[str, int]:
         with ScrapeSession(self.auth_state, settings=self.settings) as page:

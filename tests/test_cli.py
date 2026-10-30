@@ -10,7 +10,9 @@ from dataclasses import replace
 import gmaps_review_filter.cli as main
 from gmaps_review_filter.cli import build_parser, run_once
 from gmaps_review_filter.config import DEFAULT_SETTINGS
-from gmaps_review_filter.errors import PermanentScrapeError
+from gmaps_review_filter.errors import (
+    PermanentScrapeError,
+)
 from gmaps_review_filter.locale import detect_lang, matches_any
 from gmaps_review_filter.scraper import MapsScraper
 from tests.test_analyzer import FIXTURES

@@ -12,7 +12,11 @@ from pathlib import Path
 import pytest
 
 from gmaps_review_filter.config import DEFAULT_SETTINGS
-from gmaps_review_filter.errors import PermanentScrapeError, TransientScrapeError
+from gmaps_review_filter.errors import (
+    PermanentScrapeError,
+    RetriesExhaustedError,
+    TransientScrapeError,
+)
 from gmaps_review_filter.scraper import (
     MapsScraper,
     _pre_reload_delay_s,
@@ -105,16 +109,18 @@ def test_transient_exhaustion_message_names_actual_failure(monkeypatch):
         monkeypatch,
         [TransientScrapeError("no reviews list")] * DEFAULT_SETTINGS.fetch_attempts,
     )
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(RetriesExhaustedError) as excinfo:
         MapsScraper(PLACE).fetch_html()
     assert "no reviews list" in str(excinfo.value)
     assert "limited review list" not in str(excinfo.value)
+    assert excinfo.value.attempts == DEFAULT_SETTINGS.fetch_attempts
+    assert isinstance(excinfo.value.last_error, TransientScrapeError)
 
 
-def test_transient_exhaustion_raises_runtime_error(monkeypatch):
+def test_transient_exhaustion_raises_retries_exhausted(monkeypatch):
     n = DEFAULT_SETTINGS.fetch_attempts
     calls = _run_fetch(monkeypatch, [TransientScrapeError("x")] * n)
-    with pytest.raises(RuntimeError, match=f"after {n} attempts"):
+    with pytest.raises(RetriesExhaustedError, match=f"after {n} attempts"):
         MapsScraper(PLACE).fetch_html()
     assert len(calls) == n
 
@@ -124,7 +130,7 @@ def test_no_sleep_after_final_attempt(monkeypatch):
     _run_fetch(monkeypatch, [TransientScrapeError("x")] * n)
     sleeps = []
     monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RetriesExhaustedError):
         MapsScraper(PLACE).fetch_html()
     assert len(sleeps) == n - 1
 
@@ -132,7 +138,7 @@ def test_no_sleep_after_final_attempt(monkeypatch):
 def test_final_attempt_does_not_claim_it_will_retry(monkeypatch, caplog):
     n = DEFAULT_SETTINGS.fetch_attempts
     _run_fetch(monkeypatch, [TransientScrapeError("x")] * n)
-    with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError):
+    with caplog.at_level(logging.WARNING), pytest.raises(RetriesExhaustedError):
         MapsScraper(PLACE).fetch_html()
     attempts_logged = [
         r.getMessage() for r in caplog.records if r.getMessage().startswith("Attempt")

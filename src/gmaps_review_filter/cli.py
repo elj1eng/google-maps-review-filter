@@ -10,7 +10,7 @@ from typing import Any, Protocol
 from gmaps_review_filter.analyzer import ReviewAnalyzer
 from gmaps_review_filter.auth import login_and_save_state
 from gmaps_review_filter.config import DEFAULT_SETTINGS, Settings
-from gmaps_review_filter.errors import PermanentScrapeError
+from gmaps_review_filter.errors import PermanentScrapeError, ScrapeError
 from gmaps_review_filter.report import format_human, to_dict
 from gmaps_review_filter.scraper import MapsScraper
 from gmaps_review_filter.ui import Terminal
@@ -89,6 +89,14 @@ def build_parser(settings: Settings = DEFAULT_SETTINGS) -> argparse.ArgumentPars
         help=(f"saved Google session JSON (default: {settings.auth_state_path})"),
     )
     return parser
+
+
+def exit_code_for(exc: ScrapeError) -> int:
+    """Process exit code for a scrape failure: 2 only for bad URLs.
+
+    Centralized so every caller maps the same taxonomy the same way.
+    """
+    return EXIT_BAD_URL if isinstance(exc, PermanentScrapeError) else EXIT_SCRAPE_FAILED
 
 
 def _use_color() -> bool:
@@ -201,9 +209,9 @@ def _scrape_and_report(
             # Debug logs and a redrawn bar share stderr; keep the logs.
             kwargs["progress_enabled"] = False
         html_content = scraper_factory(url, **kwargs).fetch_html()
-    except PermanentScrapeError as exc:
+    except ScrapeError as exc:
         terminal.write(f"Error: {exc}")  # also closes the status line
-        return EXIT_BAD_URL
+        return exit_code_for(exc)
     except Exception as exc:
         terminal.write(f"Error: {exc}")
         return EXIT_SCRAPE_FAILED
