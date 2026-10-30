@@ -29,7 +29,7 @@ class ReviewReport:
 
     @property
     def classified(self) -> int:
-        """Cards that yielded both a rating and a reviewer count."""
+        """Cards with a parseable rating (missing reviewer count reads as 0)."""
         return self.filtered_count + self.trusted_count
 
     @property

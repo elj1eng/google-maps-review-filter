@@ -2,6 +2,9 @@
 
 CLI tool that scrapes Google Maps reviews for a place URL, then filters out low-activity reviewers to compute a trusted rating.
 
+Agent-facing docs: [`AGENTS.md`](AGENTS.md) (commands, invariants, gotchas) and
+[`GLOSSARY.md`](GLOSSARY.md) (domain vocabulary).
+
 ## How it works
 
 1. `cli.py` validates the URL through `urls.py` (a `/maps/place/` page or Maps short link — search-list URLs and lookalike hosts are rejected before any browser launches), runs `MapsScraper.fetch_html()`, then `ReviewAnalyzer`, and reports wall-clock time on stderr.
