@@ -4,8 +4,8 @@ CLI tool that scrapes Google Maps reviews for a place URL, then filters out low-
 
 ## How it works
 
-1. `cli.py` validates the URL (a `/maps/place/` page or Maps short link — search-list URLs are rejected before any browser launches), runs `MapsScraper.fetch_html()`, then `ReviewAnalyzer`, and reports wall-clock time on stderr.
-2. `scraper.py` uses Playwright (headless Chromium) to open the place page, click the Reviews tab, filter hotel tabs to Google-only reviews, auto-scroll to load review cards, and return page HTML. Scrolling stops at `--target` or the spot's own review count, whichever is smaller, so small spots finish immediately instead of waiting out the stall window. A saved Google session (`--login`) is loaded when present; anonymous sessions only see ~5 reviews. Transient failures (anti-bot limited view, render flakes) retry with backoff; deterministic failures raise immediately.
+1. `cli.py` validates the URL through `urls.py` (a `/maps/place/` page or Maps short link — search-list URLs and lookalike hosts are rejected before any browser launches), runs `MapsScraper.fetch_html()`, then `ReviewAnalyzer`, and reports wall-clock time on stderr.
+2. `scraper.py` orchestrates one attempt in a throwaway `session.py` context: open the place page, click the Reviews tab, filter hotel tabs to Google-only reviews (`dom.py`), then run the `scroll.py` loop to load cards. Scrolling stops at `--target` or the spot's own review count, whichever is smaller, so small spots finish immediately instead of waiting out the stall window. A saved Google session (`auth.py`, `--login`) is restored when present; anonymous sessions only see ~5 reviews. Transient failures (anti-bot limited view, render flakes) retry with backoff; deterministic failures raise immediately, and exhaustion raises `RetriesExhaustedError`.
 3. `analyzer.py` parses with BeautifulSoup:
    - Spot summary: name, rating, total reviews
    - Per-review: star rating + reviewer review count
@@ -24,7 +24,7 @@ $$
 Avg_{Trusted} = \frac{\sum ratings_{trusted}}{N_{trusted}}
 $$
 
-where `trusted_ratings` = ratings from reviewers with > 10 reviews.
+where `trusted_ratings` = ratings from reviewers above `--trust-threshold` (default 10).
 
 - **Logic:** Isolates reviewers who have submitted `> 10` reviews across Google Maps and recalculates the average star rating, alongside the trusted ratio:
 
@@ -37,7 +37,7 @@ over classified cards only (`N/A` when none classified). A high filtered share s
 - The report shows `Average rating (all)` vs `Average rating (trusted only)` so you can see how much low-activity reviews skew the score. Both averages cover classified cards only; cards with no parseable rating are counted separately (`Unparseable cards`), and the ratio reads `N/A` when nothing was classified.
 
 > [!NOTE]
-> **Tuning for your use case:** Prefer the CLI flags (`--target`, `--trust-threshold`); `constants.py` holds the defaults.
+> **Tuning for your use case:** Prefer the CLI flags (`--target`, `--trust-threshold`); the frozen `Settings` object in `config.py` (`DEFAULT_SETTINGS`) holds the defaults.
 > - `--trust-threshold` (default `10`): raise it (e.g. `20-50`) to filter more aggressively (stricter burner detection for high-trust vetting), or lower it (e.g. `3-5`) to filter only the barest accounts in tourist-heavy areas.
 > - `Settings.scroll_limit`, `.scroll_stall_limit`, `.dynamic_wait_ms`: increase for large spots (1000+ reviews) to enlarge `N_total` and reduce sampling bias; decrease for faster CI / low-bandwidth runs.
 > - `Settings.min_expected_reviews`: warns when fewer cards loaded than expected — a smoke signal for slow loads or rate limiting, not a second scroll pass.
@@ -142,7 +142,7 @@ works without it, but only sees ~5 reviews per spot.
 
 ### Example Output
 
-Real output carries ANSI colors; shown here plain. Figures below are from an
+On a TTY the real output carries ANSI colors; shown here plain. Figures below are from an
 actual run (The Ritz London, `--trust-threshold 10`):
 
 ```
@@ -173,6 +173,7 @@ Average rating (trusted only): 4.44 / 5
 - `src/gmaps_review_filter/report.py`: JSON schema v1 and the human report (pure, color-optional).
 - `src/gmaps_review_filter/ui.py` / `progress.py`: stderr status line, dash rule and progress bar.
 - `src/gmaps_review_filter/config.py`: frozen `Settings` (`DEFAULT_SETTINGS`) and `LOCALE_STRINGS` (en/vi UI matching).
+- `src/gmaps_review_filter/locale.py`: `<html lang>` detection and keyword matching for UI labels.
 - `src/gmaps_review_filter/errors.py`: `ScrapeError` taxonomy (transient, permanent, retries exhausted).
 - `src/gmaps_review_filter/selectors.py`: CSS selectors + `SELECTOR_META` volatility registry.
 - `scripts/refresh_fixtures.py`: dev-only golden-fixture refresher (network).
@@ -182,8 +183,8 @@ Average rating (trusted only): 4.44 / 5
 ## Testing
 
 ```bash
-uv run pytest               # offline suite, ~1s (live spots skip without a session)
-uv run pytest -m live       # 3 fixed spots end-to-end (needs --login; minutes)
+uv run pytest               # full suite, ~40s with live spots; offline-only is ~2s
+uv run pytest -m live       # 3 fixed spots end-to-end (needs --login; ~30s)
 uv run pytest -m "not live" # force the fast offline-only suite
 uv run ruff check . && uv run ruff format --check .
 uv run mypy                 # strict over src/ + scripts/ (pyproject.toml)
@@ -200,8 +201,7 @@ reviews; otherwise it skips. `GMAPS_LIVE=1` forces it on.
 
 All of the above runs in CI on push/PR. Fixtures are trimmed excerpts of
 real pages (`tests/fixtures/`, provenance in file headers); refresh them
-with `uv run python -m scripts.refresh_fixtures` (live Google
-load — sparing),
+with `uv run python -m scripts.refresh_fixtures` (live Google load — sparing),
 then update the frozen assertions to match. `hotel_mixed.html` is archival
 and intentionally not refreshed (live scrapes are Google-only by design).
 
@@ -209,9 +209,9 @@ and intentionally not refreshed (live scrapes are Google-only by design).
 
 - Sample-based: analyzes loaded review cards (`N_total`), not all reviews for the spot. Averages and ratio cover classified cards; unparseable cards are reported, not silently dropped.
 - Place pages only: `/maps/place/` URLs (or Maps short links). Search-list URLs are rejected up front.
-- Selector fragility: Google Maps markup changes frequently; `SELECTOR_META` in `constants.py` records when each selector was last observed — bump it when you update one.
+- Selector fragility: Google Maps markup changes frequently; `SELECTOR_META` in `selectors.py` records when each selector was last observed — bump it when you update one.
 - Locales: UI matching covers English and Vietnamese (`LOCALE_STRINGS`); other locales fall back to English keywords and may fail to open tabs.
-- Rate limiting / CAPTCHA: aggressive scrolling may trigger throttling; slow down `SCROLL_*` settings if so.
+- Rate limiting / CAPTCHA: aggressive scrolling may trigger throttling; lower `Settings.scroll_*` values if so.
 - Anonymous sessions: Google truncates the review feed to ~5 cards behind a sign-in wall that reloading or "See more reviews" cannot bypass. Run `--login` once to scrape signed in; the saved session expires eventually and must be refreshed.
 - Heuristic only: review count per reviewer is a weak fraud signal — high-activity accounts can still be fake, low-activity accounts can still be genuine.
 
@@ -226,4 +226,4 @@ MIT — see [LICENSE](LICENSE).
 ## Notes
 
 - Each scrape attempt runs in a throwaway browser profile (`tempfile.mkdtemp`), auto-cleaned afterwards — concurrent runs never share state.
-- Selectors live in `constants.py` and may need updates if Google changes Maps markup (see `SELECTOR_META`).
+- Selectors live in `selectors.py` and may need updates if Google changes Maps markup (see `SELECTOR_META`).
