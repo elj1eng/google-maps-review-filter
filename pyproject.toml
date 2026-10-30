@@ -59,6 +59,17 @@ markers = [
 source = ["gmaps_review_filter"]
 relative_files = true
 
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/gmaps_review_filter", "scripts"]
+mypy_path = ["src", "."]
+
 [tool.coverage.report]
-include = ["*/gmaps_review_filter/analyzer.py", "*/gmaps_review_filter/config.py"]
-fail_under = 100
+# Overall floor; pure modules additionally hold a 100% gate in CI (see
+# the coverage-pure step) so untested branches cannot hide in the average.
+fail_under = 90
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]

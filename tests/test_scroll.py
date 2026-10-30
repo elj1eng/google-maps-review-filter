@@ -2,9 +2,12 @@
 
 import logging
 import time
+from dataclasses import replace
 
 import gmaps_review_filter.scroll as scroll_mod
+from gmaps_review_filter.config import DEFAULT_SETTINGS
 from gmaps_review_filter.scroll import scroll_reviews
+from tests.fakes import FakeKeyboard, FakeLocator
 
 PLACE = "https://www.google.com/maps/place/Peter+Luger+Steak+House/@40.7,-73.9,17z"
 
@@ -200,3 +203,184 @@ def test_scroll_does_not_log_redundant_finished_line(monkeypatch):
         logger.setLevel(old_level)
 
     assert not any(m.startswith("Finished scrolling") for m in messages)
+
+
+# --- defensive branches: DOM reads fail while Maps re-renders ---
+
+
+class _BranchPage:
+    """Scripted page: one locator per count() call, then the final one."""
+
+    def __init__(
+        self,
+        sequence,
+        final,
+        *,
+        growth=0,
+        keyboard_error=None,
+        wait_error=None,
+    ):
+        self.sequence = list(sequence)
+        self.final = final
+        self.calls = 0
+        self.current = 0
+        self.growth = growth
+        self.keyboard = FakeKeyboard(error=keyboard_error)
+        self.wait_error = wait_error
+        self.slept = []
+
+    def locator(self, selector):
+        self.calls += 1
+        if self.calls <= len(self.sequence):
+            return self.sequence[self.calls - 1]
+        return self.final
+
+    def count(self):
+        return self.current
+
+    def nth(self, index):
+        return self
+
+    def scroll_into_view_if_needed(self, timeout=None):
+        pass
+
+    def wait_for_function(self, *args, **kwargs):
+        if self.wait_error is not None:
+            raise self.wait_error
+        self.current += self.growth
+
+
+def _count_locator(page):
+    return FakeLocator([], count_fn=lambda: page.current)
+
+
+def _error_locator():
+    return FakeLocator([], count_error=RuntimeError("DOM went away"))
+
+
+def _branch_page(iterations, *, growth=0, initial_error=False, **kwargs):
+    page = _BranchPage([], None, growth=growth, **kwargs)
+    sequence = [_error_locator() if initial_error else _count_locator(page)]
+    for _ in range(iterations):
+        sequence += [_count_locator(page), _count_locator(page), _count_locator(page)]
+    page.sequence = sequence
+    page.final = _count_locator(page)
+    return page
+
+
+def _run_branch(monkeypatch, page, *, target=10, settings=None):
+    monkeypatch.setattr(scroll_mod, "find_scrollable_pane", lambda p: object())
+    monkeypatch.setattr(scroll_mod, "wheel_scroll", lambda p, pane, px, **kw: True)
+    monkeypatch.setattr(scroll_mod, "spot_review_total", lambda p: None)
+    monkeypatch.setattr(time, "sleep", lambda s: page.slept.append(s))
+    progress = _RecordingProgress(target)
+    settings = settings or replace(
+        DEFAULT_SETTINGS, scroll_stall_limit=1, scroll_limit=3
+    )
+    return scroll_reviews(page, target, progress, settings=settings), progress
+
+
+def test_initial_count_failure_draws_zero(monkeypatch):
+    page = _branch_page(1, initial_error=True)
+    final, progress = _run_branch(monkeypatch, page)
+    assert final == 0
+    assert progress.updates == [0]
+
+
+def test_prev_count_failure_is_treated_as_zero(monkeypatch):
+    page = _branch_page(1)
+    page.sequence[1] = _error_locator()  # the first loop's prev_count read
+    final, progress = _run_branch(monkeypatch, page)
+    assert final == 0
+    assert progress.updates == [0]
+
+
+def test_new_count_failure_keeps_the_previous_count(monkeypatch):
+    page = _branch_page(1)
+    page.sequence[3] = _error_locator()  # new_count read
+    final, _ = _run_branch(monkeypatch, page)
+    assert final == 0
+
+
+def test_cards_locator_failure_is_swallowed(monkeypatch):
+    page = _branch_page(1)
+    page.sequence[2] = _error_locator()  # the "bring last card into view" read
+    final, _ = _run_branch(monkeypatch, page)
+    assert final == 0
+
+
+def test_keyboard_and_wait_failures_fall_back_to_sleep(monkeypatch):
+    page = _branch_page(1, keyboard_error=RuntimeError("no keyboard"))
+    page.wait_error = RuntimeError("no function wait")
+    _run_branch(monkeypatch, page)
+    assert page.slept == [DEFAULT_SETTINGS.scroll_sleep_s]
+
+
+def test_stale_pane_resolution_failure_is_swallowed(monkeypatch):
+    page = _branch_page(6, growth=0)
+    monkeypatch.setattr(scroll_mod, "find_scrollable_pane", lambda p: object())
+    calls = {"n": 0}
+
+    def flaky(p):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise RuntimeError("pane detached")
+        return object()
+
+    monkeypatch.setattr(scroll_mod, "find_scrollable_pane", flaky)
+    monkeypatch.setattr(scroll_mod, "wheel_scroll", lambda p, pane, px, **kw: True)
+    monkeypatch.setattr(scroll_mod, "spot_review_total", lambda p: None)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    settings = replace(DEFAULT_SETTINGS, scroll_limit=6, scroll_stall_limit=10)
+    assert scroll_reviews(page, 10, _RecordingProgress(10), settings=settings) == 0
+
+
+def test_wheel_fallback_failure_is_swallowed(monkeypatch):
+    page = _branch_page(2)
+    calls = {"n": 0}
+
+    def flaky(p):
+        calls["n"] += 1
+        if calls["n"] > 2:
+            raise RuntimeError("pane detached")
+        return object()
+
+    monkeypatch.setattr(scroll_mod, "find_scrollable_pane", flaky)
+    monkeypatch.setattr(scroll_mod, "wheel_scroll", lambda p, pane, px, **kw: False)
+    monkeypatch.setattr(scroll_mod, "spot_review_total", lambda p: None)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    settings = replace(DEFAULT_SETTINGS, scroll_stall_limit=2, scroll_limit=2)
+    assert scroll_reviews(page, 10, _RecordingProgress(10), settings=settings) == 0
+
+
+def test_final_count_failure_returns_zero(monkeypatch):
+    page = _branch_page(1)
+    page.final = _error_locator()
+    final, _ = _run_branch(monkeypatch, page)
+    assert final == 0
+
+
+def test_piped_mode_logs_progress_every_ten_batches(monkeypatch, caplog):
+    page = _branch_page(11, growth=1)
+    monkeypatch.setattr(scroll_mod, "find_scrollable_pane", lambda p: object())
+    monkeypatch.setattr(scroll_mod, "wheel_scroll", lambda p, pane, px, **kw: True)
+    monkeypatch.setattr(scroll_mod, "spot_review_total", lambda p: None)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    settings = replace(DEFAULT_SETTINGS, scroll_limit=11, scroll_stall_limit=5)
+    progress = _RecordingProgress(10, enabled=False)
+    with caplog.at_level(logging.INFO):
+        assert scroll_reviews(page, 10, progress, settings=settings) == 10
+    assert "... loaded 10 reviews so far" in caplog.text
+    assert "Reached target: 10 reviews (target 10)." in caplog.text
+
+
+def test_piped_mode_logs_the_spot_total_completion(monkeypatch, caplog):
+    page = _branch_page(1, growth=5)
+    monkeypatch.setattr(scroll_mod, "find_scrollable_pane", lambda p: object())
+    monkeypatch.setattr(scroll_mod, "wheel_scroll", lambda p, pane, px, **kw: True)
+    monkeypatch.setattr(scroll_mod, "spot_review_total", lambda p: 5)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    progress = _RecordingProgress(210, enabled=False)
+    with caplog.at_level(logging.INFO):
+        assert scroll_reviews(page, 210, progress) == 5
+    assert "Reached the spot's total: 5 reviews." in caplog.text

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import runpy
 import subprocess
 import sys
 import tomllib
@@ -387,3 +388,87 @@ def test_python_dash_m_entry_point_prints_version():
     )
     assert result.returncode == 0
     assert result.stdout.strip() == f"gmaps-filter {__version__}"
+
+
+# --- terminal/color helpers ---
+
+
+def test_ensure_utf8_reconfigures_a_non_utf8_stdout(monkeypatch):
+    class _Stdout:
+        encoding = "latin-1"
+
+        def __init__(self):
+            self.calls = []
+
+        def reconfigure(self, **kwargs):
+            self.calls.append(kwargs)
+
+    stdout = _Stdout()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    main.ensure_utf8_stdout()
+    assert stdout.calls == [{"encoding": "utf-8"}]
+
+
+def test_use_color_respects_no_color_and_tty(monkeypatch):
+    class _Stdout:
+        def __init__(self, tty):
+            self._tty = tty
+
+        def isatty(self):
+            if isinstance(self._tty, Exception):
+                raise self._tty
+            return self._tty
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(sys, "stdout", _Stdout(True))
+    assert main._use_color() is False
+
+    monkeypatch.delenv("NO_COLOR")
+    assert main._use_color() is True
+    monkeypatch.setattr(sys, "stdout", _Stdout(False))
+    assert main._use_color() is False
+    monkeypatch.setattr(sys, "stdout", _Stdout(RuntimeError("no tty")))
+    assert main._use_color() is False
+
+
+def test_progress_bar_falls_back_when_stderr_is_unreadable():
+    class _Stream:
+        def isatty(self):
+            raise RuntimeError("closed")
+
+        def write(self, text):
+            pass
+
+        def flush(self):
+            pass
+
+    from gmaps_review_filter.ui import Terminal
+
+    assert main._use_progress_bar(False, Terminal(_Stream())) is False
+    assert main._use_progress_bar(True, Terminal(_Stream())) is False
+
+
+def test_interactive_eof_says_goodbye(monkeypatch, capsys):
+    def eof(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    assert main.main([]) == 0
+    assert "Goodbye!" in capsys.readouterr().out
+
+
+def test_module_guard_runs_main(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["gmaps-filter", "--version"])
+    with pytest.raises(SystemExit) as excinfo:
+        runpy.run_module("gmaps_review_filter", run_name="__main__")
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out.strip() == f"gmaps-filter {__version__}"
+
+
+def test_human_report_path_prints_the_text_report(monkeypatch, capsys):
+    code = _run(factory=_fixture_factory("restaurant.html"), as_json=False)
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "ANALYSIS (Sample:" in out
+    assert "Peter Luger Steak House" in out
+    assert '"schema_version"' not in out

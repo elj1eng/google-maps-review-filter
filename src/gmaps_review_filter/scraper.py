@@ -270,7 +270,7 @@ class MapsScraper:
             return
         if chip is None:
             return  # no filter chip: restaurant page or changed markup
-        if chip_label.lower() in strings["google_source"]:
+        if any(term in chip_label.lower() for term in strings["google_source"]):
             logger.info("Review filter already 'Google'.")
             return
 

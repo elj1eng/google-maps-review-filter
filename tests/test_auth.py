@@ -4,6 +4,9 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
+import gmaps_review_filter.auth as auth_mod
 from gmaps_review_filter.auth import (
     has_google_session,
     load_storage_cookies,
@@ -11,6 +14,8 @@ from gmaps_review_filter.auth import (
     save_storage_state,
 )
 from gmaps_review_filter.config import DEFAULT_SETTINGS
+from gmaps_review_filter.errors import PermanentScrapeError
+from tests.fakes import FakeContext, FakePage, FakePlaywright, FakePlaywrightManager
 
 
 class _RecordingContext:
@@ -70,3 +75,58 @@ def test_load_storage_cookies_bad_files_are_empty(tmp_path):
     shape = tmp_path / "shape.json"
     shape.write_text(json.dumps({"cookies": "nope"}), encoding="utf-8")
     assert load_storage_cookies(shape) == []
+
+
+# --- login flow (fake browser) ---
+
+
+def _fake_login(monkeypatch, tmp_path, cookies):
+    page = FakePage()
+    context = FakeContext(page, cookies=cookies)
+    playwright = FakePlaywright(context)
+    manager = FakePlaywrightManager(playwright)
+    monkeypatch.setattr(auth_mod, "sync_playwright", lambda: manager)
+    monkeypatch.setattr(auth_mod.time, "sleep", lambda seconds: None)
+    profile = tmp_path / "login-profile"
+    profile.mkdir()
+    monkeypatch.setattr(auth_mod.tempfile, "mkdtemp", lambda prefix: str(profile))
+    return page, context, playwright, manager, profile
+
+
+def test_login_saves_the_session_and_removes_the_profile(monkeypatch, tmp_path):
+    cookies = [[], [{"name": "SID", "value": "abc"}]]
+    page, context, playwright, manager, profile = _fake_login(
+        monkeypatch, tmp_path, lambda call: cookies[min(call - 1, 1)]
+    )
+    target = tmp_path / "auth.json"
+
+    saved = auth_mod.login_and_save_state(str(target))
+
+    assert saved == str(target)
+    assert target.is_file()
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert page.gotos == [(DEFAULT_SETTINGS.login_url, "domcontentloaded")]
+    _, kwargs = playwright.chromium.calls[0]
+    assert kwargs["headless"] is False
+    assert kwargs["viewport"] == DEFAULT_SETTINGS.viewport
+    assert context.closed is True
+    assert manager.exited is True
+    assert not profile.exists()
+
+
+def test_login_uses_the_configured_default_path(monkeypatch, tmp_path):
+    _, _, _, _, _ = _fake_login(
+        monkeypatch, tmp_path, [{"name": "SAPISID", "value": "abc"}]
+    )
+    target = tmp_path / "configured" / "auth.json"
+    settings = replace(DEFAULT_SETTINGS, auth_state_path=str(target))
+    assert auth_mod.login_and_save_state(settings=settings) == str(target)
+    assert target.is_file()
+
+
+def test_login_timeout_is_permanent_and_cleans_up(monkeypatch, tmp_path):
+    _, context, _, _, profile = _fake_login(monkeypatch, tmp_path, [])
+    with pytest.raises(PermanentScrapeError, match="no Google sign-in detected"):
+        auth_mod.login_and_save_state(str(tmp_path / "auth.json"), timeout_s=0)
+    assert context.closed is True
+    assert not profile.exists()

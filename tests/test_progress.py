@@ -106,3 +106,17 @@ def test_zero_total_never_divides_by_zero():
     progress, stream = _bar(total=0)
     progress.update(5)
     assert stream.text.endswith(f"[{EMPTY * 20}] 5/0 (0%)\033[K")
+
+
+def test_unreadable_stream_disables_the_bar():
+    class _Broken:
+        def isatty(self):
+            raise RuntimeError("closed")
+
+        def write(self, text):
+            pass
+
+        def flush(self):
+            pass
+
+    assert ReviewProgress(10, stream=_Broken()).enabled is False

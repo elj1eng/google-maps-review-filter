@@ -160,14 +160,24 @@ Average rating (trusted only): 4.44 / 5
 
 ## Project Structure
 
-- `src/gmaps_review_filter/cli.py`: argparse CLI (`--target`, `--trust-threshold`, `--json`, `--verbose`, `--login`, `--auth`), exit codes 0/1/2, human/JSON report rendering (`gmaps-filter` entry point).
-- `src/gmaps_review_filter/scraper.py`: Playwright navigation, Reviews tab handling, hotel Google-only filter, dynamic scroll, saved-session restore, `--login` helper.
-- `src/gmaps_review_filter/errors.py`: transient vs permanent error taxonomy.
-- `src/gmaps_review_filter/analyzer.py`: BeautifulSoup parsing, spot summary, trusted/filtered split (fully typed, 100% covered).
+- `src/gmaps_review_filter/cli.py`: argparse CLI (`--target`, `--trust-threshold`, `--json`, `--verbose`, `--login`, `--auth`, `--version`), exit codes 0/1/2, human/JSON output.
+- `src/gmaps_review_filter/scraper.py`: orchestration — retry policy, Reviews tab, hotel Google-only filter.
+- `src/gmaps_review_filter/session.py`: one throwaway headless browser context per attempt.
+- `src/gmaps_review_filter/auth.py`: saved-session detection/restore and the `--login` flow.
+- `src/gmaps_review_filter/dom.py`: Playwright probing helpers (locators, settle-waits, wheel input).
+- `src/gmaps_review_filter/scroll.py`: the lazy-load scroll loop and early stop at the spot total.
+- `src/gmaps_review_filter/urls.py`: place-URL gate (exact Google host allowlist + `/maps/place/`).
+- `src/gmaps_review_filter/analyzer.py`: BeautifulSoup parsing, spot summary, trusted/filtered split.
+- `src/gmaps_review_filter/parsing.py`: shared review-count/rating parsers (scraper + analyzer).
+- `src/gmaps_review_filter/models.py`: frozen `PlaceSummary` / `ReviewReport` records.
+- `src/gmaps_review_filter/report.py`: JSON schema v1 and the human report (pure, color-optional).
+- `src/gmaps_review_filter/ui.py` / `progress.py`: stderr status line, dash rule and progress bar.
+- `src/gmaps_review_filter/config.py`: frozen `Settings` (`DEFAULT_SETTINGS`) and `LOCALE_STRINGS` (en/vi UI matching).
+- `src/gmaps_review_filter/errors.py`: `ScrapeError` taxonomy (transient, permanent, retries exhausted).
 - `src/gmaps_review_filter/selectors.py`: CSS selectors + `SELECTOR_META` volatility registry.
-- `src/gmaps_review_filter/config.py`: thresholds, browser tuning, `LOCALE_STRINGS` (en/vi UI matching), saved-session path and login URL/timeout.
-- `pyproject.toml` / `uv.lock`: dependencies (`requirements.txt` generated from these).
-- `tests/`: pytest suite — analyzer golden fixtures plus offline scraper-policy and CLI tests. Only the refresh tool needs the network.
+- `scripts/refresh_fixtures.py`: dev-only golden-fixture refresher (network).
+- `tests/`: offline suite (fake Playwright objects, golden fixtures) plus live spot checks.
+- `pyproject.toml` / `uv.lock`: dependencies, strict mypy and coverage gates (`requirements.txt` generated from these).
 
 ## Testing
 
@@ -176,9 +186,10 @@ uv run pytest               # offline suite, ~1s (live spots skip without a sess
 uv run pytest -m live       # 3 fixed spots end-to-end (needs --login; minutes)
 uv run pytest -m "not live" # force the fast offline-only suite
 uv run ruff check . && uv run ruff format --check .
-uv run mypy --strict src/gmaps_review_filter/analyzer.py src/gmaps_review_filter/config.py
+uv run mypy                 # strict over src/ + scripts/ (pyproject.toml)
 uv run coverage run -m pytest -m "not live"
-uv run coverage report      # include + fail-under=100 configured in pyproject.toml
+uv run coverage report      # overall floor: 90%
+uv run coverage report --include='*/analyzer.py,*/parsing.py,*/models.py,*/report.py,*/config.py,*/errors.py' --fail-under=100
 ```
 
 `tests/test_live_spots.py` scrapes three fixed spots (Brisnie Matcha,

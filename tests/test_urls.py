@@ -2,6 +2,7 @@
 
 import pytest
 
+import gmaps_review_filter.urls as urls_mod
 from gmaps_review_filter.errors import PermanentScrapeError
 from gmaps_review_filter.urls import is_google_host, validate_place_url
 
@@ -60,3 +61,12 @@ def test_is_google_host_rejects_lookalikes():
     assert not is_google_host("google.co.uk")
     assert not is_google_host("notgoogle.com")
     assert not is_google_host("")
+
+
+def test_malformed_url_is_permanent_and_names_the_parse_error(monkeypatch):
+    def boom(url):
+        raise ValueError("bad brackets")
+
+    monkeypatch.setattr(urls_mod.urllib.parse, "urlparse", boom)
+    with pytest.raises(PermanentScrapeError, match="bad brackets"):
+        validate_place_url("https://google.com/maps/place/X")
