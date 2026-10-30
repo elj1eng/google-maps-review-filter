@@ -189,7 +189,7 @@ reviews; otherwise it skips. `GMAPS_LIVE=1` forces it on.
 
 All of the above runs in CI on push/PR. Fixtures are trimmed excerpts of
 real pages (`tests/fixtures/`, provenance in file headers); refresh them
-with `uv run python -m gmaps_review_filter.refresh_fixtures` (live Google
+with `uv run python -m scripts.refresh_fixtures` (live Google
 load — sparing),
 then update the frozen assertions to match. `hotel_mixed.html` is archival
 and intentionally not refreshed (live scrapes are Google-only by design).

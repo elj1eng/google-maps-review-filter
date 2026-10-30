@@ -16,9 +16,8 @@ import pytest
 
 from gmaps_review_filter.auth import resolve_auth_state
 from gmaps_review_filter.cli import EXIT_OK, run_once
-from gmaps_review_filter.refresh_fixtures import LUGER_URL, MBS_URL
+from tests.spots import BRISNIE_URL, LUGER_URL, MBS_URL
 
-BRISNIE_URL = "https://maps.app.goo.gl/jQokksYrdN2s8DDC6"
 LIVE_TARGET = 60
 TRUST_LIMIT = 10
 

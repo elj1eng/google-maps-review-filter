@@ -4,7 +4,7 @@ Re-scrapes the fixture spots, re-trims to header + representative cards,
 and prints the new frozen shapes so test assertions can be updated.
 Network-dependent; run sparingly (rate limits apply).
 
-Usage: uv run python -m gmaps_review_filter.refresh_fixtures
+Usage (from the repo root): uv run python -m scripts.refresh_fixtures
 """
 
 import time
@@ -15,22 +15,9 @@ from bs4 import BeautifulSoup
 from gmaps_review_filter.analyzer import ReviewAnalyzer
 from gmaps_review_filter.scraper import MapsScraper
 from gmaps_review_filter.selectors import CSS_SELECTORS
+from tests.spots import LUGER_URL, MBS_URL
 
-OUT = Path(__file__).resolve().parent.parent.parent / "tests" / "fixtures"
-
-MBS_URL = (
-    "https://www.google.com/maps/place/Marina+Bay+Sands+Singapore/"
-    "@1.2837575,103.8591065,17z/data=!3m1!"
-    "5s0x31da19042de382df:0x5bbfe003fe5e690!4m9!3m8!"
-    "1s0x31da19ee4cc09203:0x26c9afefa555dd7!5m2!4m1!1i2!"
-    "8m2!3d1.2837575!4d103.8591065!16zL20vMGRkOTAz?entry=ttu"
-)
-LUGER_URL = (
-    "https://www.google.com/maps/place/Peter+Luger+Steak+House/"
-    "@40.7098774,-73.9625052,17z/data=!3m1!4b1!4m6!3m5!"
-    "1s0x89c25bdedbcaf647:0x469a1d01423a03f2!8m2!3d40.7098774!"
-    "4d-73.9625052!16zL20vMGI2MWt4?entry=ttu"
-)
+OUT = Path(__file__).resolve().parent.parent / "tests" / "fixtures"
 
 SPOTS = {
     # NOTE: hotel_mixed.html is archival (pre-filter mixed feed, kept so the
