@@ -132,16 +132,20 @@ class SpotQueue:
         stream: TextIO,
         *,
         on_result: Callable[[EnqueueResult], None] | None = None,
+        on_blank: Callable[[], None] | None = None,
     ) -> threading.Thread:
         """Consume URL lines from ``stream`` on a daemon thread.
 
         Blank lines are ignored, stop words call :meth:`request_stop`, and
         EOF closes the queue so the CLI exits once pending work drains.
-        ``on_result`` (optional) reports each outcome to the caller.
+        ``on_result`` (optional) reports each outcome to the caller;
+        ``on_blank`` fires for a consumed line that yields no URL (blank
+        input or a stop word). Enter's echo moves the terminal cursor, so
+        the CLI re-anchors a live prompt there.
         """
         reader = threading.Thread(
             target=self._read,
-            args=(stream, on_result),
+            args=(stream, on_result, on_blank),
             name="gmaps-url-reader",
             daemon=True,
         )
@@ -159,13 +163,18 @@ class SpotQueue:
         self,
         stream: TextIO,
         on_result: Callable[[EnqueueResult], None] | None,
+        on_blank: Callable[[], None] | None = None,
     ) -> None:
         try:
             for line in stream:
                 text = line.strip()
                 if not text:
+                    if on_blank is not None:
+                        on_blank()
                     continue
                 if text.lower() in STOP_WORDS:
+                    if on_blank is not None:
+                        on_blank()
                     self.request_stop()
                     return
                 result = self.enqueue(text)

@@ -132,6 +132,89 @@ def test_finish_calls_on_finish_even_without_updates():
     assert calls == [1]
 
 
+FOOTER = "queue - Enter Google Maps URL (or 'q' to quit):"
+
+
+def _footer_bar(*, enabled=True):
+    stream = _TtyStream()
+    progress = ReviewProgress(
+        210,
+        stream=stream,
+        width=20,
+        label="Loading reviews",
+        enabled=enabled,
+        columns=200,
+        footer=FOOTER,
+    )
+    return progress, stream
+
+
+def test_first_frame_prints_the_footer_below_the_bar():
+    progress, stream = _footer_bar()
+    progress.update(10)
+    assert stream.text == "\r" + progress._frame(10) + "\n" + FOOTER
+    assert progress.footer_live is True
+
+
+def test_later_frames_redraw_the_bar_above_the_footer():
+    progress, stream = _footer_bar()
+    progress.update(10)
+    progress.update(20)
+    # One row up (the footer), redraw, restore the cursor after the prompt.
+    assert stream.text.endswith("\033[s\033[1A\r" + progress._frame(20) + "\033[u")
+
+
+def test_notify_inserts_rows_between_bar_and_footer():
+    progress, stream = _footer_bar()
+    progress.update(10)
+    progress.notify("Queued: X")
+    assert stream.text.endswith("\033[1A\r\033[KQueued: X\n" + FOOTER)
+    # The new row is accounted for when the bar redraws.
+    progress.update(20)
+    assert stream.text.endswith("\033[s\033[2A\r" + progress._frame(20) + "\033[u")
+
+
+def test_multi_line_notice_moves_the_footer_down_by_every_row():
+    progress, stream = _footer_bar()
+    progress.update(10)
+    progress.notify("Queued: X\n0. A\n1. B")
+    assert stream.text.endswith("\033[1A\r\033[KQueued: X\n0. A\n1. B\n" + FOOTER)
+    progress.update(20)
+    assert stream.text.endswith("\033[s\033[4A\r" + progress._frame(20) + "\033[u")
+
+
+def test_empty_notice_reanchors_without_adding_a_row():
+    progress, stream = _footer_bar()
+    progress.update(10)
+    progress.notify("")
+    assert stream.text.endswith("\033[1A\r\033[K" + FOOTER)
+    progress.update(20)
+    assert stream.text.endswith("\033[s\033[1A\r" + progress._frame(20) + "\033[u")
+
+
+def test_notify_without_a_live_bar_is_a_plain_line():
+    progress, stream = _footer_bar()
+    progress.notify("Queued: X")
+    assert stream.text == "Queued: X\n"
+
+
+def test_finish_erases_the_footer_without_an_extra_newline():
+    progress, stream = _footer_bar()
+    progress.update(10)
+    progress.finish()
+    assert stream.text.endswith("\r\033[K")
+    assert not stream.text.endswith("\n")
+    assert progress.footer_live is False
+
+
+def test_disabled_footer_bar_stays_silent():
+    progress, stream = _footer_bar(enabled=False)
+    progress.update(10)
+    progress.notify("Queued: X")
+    progress.finish()
+    assert stream.text == ""
+
+
 def test_unreadable_stream_disables_the_bar():
     class _Broken:
         def isatty(self):

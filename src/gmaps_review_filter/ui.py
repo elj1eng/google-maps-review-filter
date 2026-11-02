@@ -55,6 +55,10 @@ class Terminal:
         # the scrape redraws the bar; one reentrant lock serializes both.
         self._lock = threading.RLock()
         self._bar_active = False
+        # Queue mode asks the next bar to print this prompt below itself.
+        # Set by the CLI around a scrape; None keeps the old single line.
+        self.footer: str | None = None
+        self._bar: ReviewProgress | None = None
 
     def _write(self, text: str) -> None:
         with self._lock:
@@ -64,15 +68,28 @@ class Terminal:
     def write(self, text: str = "", *, end: str = "\n") -> None:
         """Write a complete line, closing any open status line first.
 
-        A live bar frame ends without a newline, so it is erased before the
-        text starts; the next frame redraws from column zero.
+        When the bar has a footer (queue mode), the line is inserted above
+        that footer and the bar stays where it is. Otherwise a live bar
+        frame ends without a newline, so it is erased before the text
+        starts; the next frame redraws from column zero.
         """
         with self._lock:
+            bar = self._bar
+            if bar is not None and bar.enabled and bar.footer_live:
+                bar.notify(text)
+                return
             if self._bar_active:
                 self._write(ERASE_LINE)
                 self._bar_active = False
             self.close_status()
             self._write(text + end)
+
+    def refresh_footer(self) -> None:
+        """Reprint a live bar footer after a bare Enter moved the cursor."""
+        with self._lock:
+            bar = self._bar
+            if bar is not None and bar.footer_live:
+                bar.reanchor()
 
     def status(self, text: str) -> StatusLine:
         """Show a no-newline status line for the next step."""
@@ -113,12 +130,15 @@ class Terminal:
                 status=self._status,
                 lock=self._lock,
                 on_finish=self._bar_finished,
+                footer=self.footer,
             )
             # Only a bar that will actually draw owns the terminal line;
             # piped stderr must stay free of erase sequences.
             self._bar_active = bar.enabled
+            self._bar = bar
             return bar
 
     def _bar_finished(self) -> None:
         with self._lock:
             self._bar_active = False
+            self._bar = None

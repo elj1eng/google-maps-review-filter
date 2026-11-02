@@ -147,6 +147,15 @@ def test_reader_enqueues_lines_and_closes_on_eof():
     assert queue.next() is None
 
 
+def test_reader_reanchors_the_prompt_on_a_stop_word():
+    queue = SpotQueue()
+    calls = []
+    queue.start_reader(io.StringIO("q\n"), on_blank=lambda: calls.append(1))
+    queue.join_reader(timeout=2)
+    assert calls == [1]
+    assert queue.stopped is True
+
+
 @pytest.mark.parametrize("word", sorted(STOP_WORDS))
 def test_reader_stop_words_request_a_stop(word):
     queue = SpotQueue()
@@ -155,6 +164,22 @@ def test_reader_stop_words_request_a_stop(word):
     assert queue.stopped is True
     assert queue.next() is None
     # PLACE_A was accepted before the stop word; PLACE_B never was.
+    assert queue.pending() == 1
+
+
+def test_reader_reports_blank_lines_without_enqueuing():
+    """A bare Enter moves the terminal cursor; the CLI re-anchors its prompt."""
+    queue = SpotQueue()
+    blanks = []
+    results = []
+    queue.start_reader(
+        io.StringIO(f"\n{PLACE_A}\n\n"),
+        on_result=results.append,
+        on_blank=lambda: blanks.append(1),
+    )
+    queue.join_reader(timeout=2)
+    assert blanks == [1, 1]
+    assert [result.status for result in results] == [QueueStatus.QUEUED]
     assert queue.pending() == 1
 
 

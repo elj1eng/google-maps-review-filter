@@ -176,15 +176,23 @@ def _stdin_is_tty() -> bool:
         return False
 
 
+def _notice_text(result: EnqueueResult) -> str | None:
+    """Human line for one enqueue outcome, or None when it is silent."""
+    if result.status is QueueStatus.QUEUED:
+        return f"Queued: {place_label(result.url)}"
+    if result.status is QueueStatus.DUPLICATE:
+        return f"Already queued: {place_label(result.url)}"
+    if result.status is QueueStatus.REJECTED:
+        return f"Skipped ({result.reason}): {result.url}"
+    # STOPPED: the run is shutting down; stay quiet.
+    return None
+
+
 def _queue_notice(result: EnqueueResult, terminal: Terminal) -> None:
     """One stderr line per input URL, safe to call from the reader thread."""
-    if result.status is QueueStatus.QUEUED:
-        terminal.write(f"Queued: {place_label(result.url)}")
-    elif result.status is QueueStatus.DUPLICATE:
-        terminal.write(f"Already queued: {place_label(result.url)}")
-    elif result.status is QueueStatus.REJECTED:
-        terminal.write(f"Skipped ({result.reason}): {result.url}")
-    # STOPPED: the run is shutting down; stay quiet.
+    text = _notice_text(result)
+    if text is not None:
+        terminal.write(text)
 
 
 def _show_idle_prompt(queue: SpotQueue, terminal: Terminal) -> None:
@@ -210,7 +218,7 @@ class _QueueView:
         """Mark ``url`` as the current spot and print the queue."""
         with self._lock:
             self._current = url
-            self._render(url)
+            self._terminal.write("\n".join(self._rows(url)))
 
     def finish(self) -> None:
         """Clear the current spot once its scrape returns."""
@@ -218,17 +226,26 @@ class _QueueView:
             self._current = None
 
     def notice(self, result: EnqueueResult) -> None:
-        """Report one enqueue outcome; redraw the list when work is running."""
-        with self._lock:
-            _queue_notice(result, self._terminal)
-            if result.status is QueueStatus.QUEUED and self._current is not None:
-                self._render(self._current)
+        """Report one enqueue outcome; redraw the list when work is running.
 
-    def _render(self, current: str) -> None:
+        The outcome line and the refreshed list go out as one write so a
+        live bar inserts them as one block, not two overlapping notices.
+        """
+        with self._lock:
+            lines: list[str] = []
+            text = _notice_text(result)
+            if text is not None:
+                lines.append(text)
+            if result.status is QueueStatus.QUEUED and self._current is not None:
+                lines.extend(self._rows(self._current))
+            if lines:
+                self._terminal.write("\n".join(lines))
+
+    def _rows(self, current: str) -> list[str]:
         rows = [f"0. {place_label(current)}"]
         for index, url in enumerate(self._queue.pending_urls(), start=1):
             rows.append(f"{index}. {place_label(url)}")
-        self._terminal.write("\n".join(rows))
+        return rows
 
 
 def run_once(
@@ -310,8 +327,10 @@ def _scrape_and_report(
         _auth_hint(auth_state, terminal, settings=settings)
     if bar_mode:
         # No newline: the first bar frame starts with \r and overwrites
-        # this status line, so the crawl shows only the bar.
-        terminal.status("Opening Google Maps...")
+        # this status line, so the crawl shows only the bar. In queue mode
+        # the status is the queue prompt, so URLs can be typed during the
+        # slow startup before the first frame appears.
+        terminal.status(terminal.footer or "Opening Google Maps...")
     try:
         if not bar_mode:
             terminal.write(f"Initializing scraper for: {url}")
@@ -385,11 +404,13 @@ def run_queue(
     term = terminal or Terminal()
     queue = spot_queue if spot_queue is not None else SpotQueue()
     view = _QueueView(queue, term)
+    bar_mode = _use_progress_bar(verbose, term)
     follow_stdin = spot_queue is None
     if follow_stdin:
         queue.start_reader(
             sys.stdin if stdin is None else stdin,
             on_result=view.notice,
+            on_blank=term.refresh_footer,
         )
     for raw in urls:
         view.notice(queue.enqueue(raw))
@@ -407,23 +428,32 @@ def run_queue(
             if not first and not as_json:
                 term.separator()
             view.start(url)
-            term.write(QUEUE_PROMPT)
-            codes.append(
-                run_once(
-                    url,
-                    target=target,
-                    trust_threshold=trust_threshold,
-                    as_json=as_json,
-                    auth_state=auth_state,
-                    verbose=verbose,
-                    scraper_factory=scraper_factory,
-                    terminal=term,
-                    settings=settings,
-                    ndjson=as_json,
-                    auth_hint=first,
+            # On a TTY the bar draws the prompt on the row below itself,
+            # so it survives every frame and typing happens there; piped
+            # stderr gets a plain line instead.
+            if bar_mode:
+                term.footer = QUEUE_PROMPT
+            else:
+                term.write(QUEUE_PROMPT)
+            try:
+                codes.append(
+                    run_once(
+                        url,
+                        target=target,
+                        trust_threshold=trust_threshold,
+                        as_json=as_json,
+                        auth_state=auth_state,
+                        verbose=verbose,
+                        scraper_factory=scraper_factory,
+                        terminal=term,
+                        settings=settings,
+                        ndjson=as_json,
+                        auth_hint=first,
+                    )
                 )
-            )
-            view.finish()
+            finally:
+                term.footer = None
+                view.finish()
             first = False
     except KeyboardInterrupt:
         term.write(f"Interrupted; {queue.pending()} queued spot(s) discarded.")

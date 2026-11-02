@@ -80,8 +80,8 @@ Pipeline: `cli.run_once` → `MapsScraper.fetch_html` (retry loop) →
   stdout carries the report only, so `--json` stays pipeable.
 - **The queue reader thread never touches Playwright.** It only reads stdin and
   appends to `SpotQueue`; scraping stays on the main thread. All stderr output
-  goes through the thread-safe `Terminal`, which erases a live bar frame before
-  writing a complete line.
+  goes through the thread-safe `Terminal`. A bar with a footer *inserts* the
+  line between bar and prompt; a bare bar erases its frame before the line.
 - **ANSI is gated.** Color only when stdout is a TTY and `NO_COLOR` is unset;
   the bar only when stderr is a TTY and `--verbose` is off.
 - **Host allowlist is deliberate:** `google.com`, `google.com.vn` and their
@@ -142,9 +142,15 @@ Pipeline: `cli.run_once` → `MapsScraper.fetch_html` (retry loop) →
 - Re-resolve the scroll pane after stalls: Playwright handles go stale as Maps
   re-renders the list.
 - The progress bar and logging share stderr. Call `progress.finish()` before
-  logging, or the log text appends to the bar frame. `Terminal.write` handles
-  the queue case: it erases a live frame (`\r\033[K`) before the line, and only
-  when the bar is enabled, so piped stderr never sees escape codes.
+  logging, or the log text appends to the bar frame. A live bar with a footer
+  (`Terminal.footer`, set by `run_queue` only when the bar will draw) owns two
+  rows: the bar and the queue prompt below it. `Terminal.write` inserts notices
+  between them via cursor save/restore; redraws move up `_notice_rows + 1`, so
+  the bar updates in place instead of being recreated per confirmation.
+- Raised/blank input lines move the terminal cursor one row down. The reader
+  calls `Terminal.refresh_footer` (`on_blank`) to reprint the prompt; without
+  it the next bar frame would land on the prompt row. `finish()` erases the
+  footer row so the report starts clean.
 - Typed characters can still visually collide with a redrawing bar until Enter
   is pressed; the `Queued: <name>` confirmation is the source of truth. Do not
   add raw-mode/termios handling for this.

@@ -634,6 +634,90 @@ def test_queue_prints_the_auth_hint_once(capsys, tmp_path):
     assert capsys.readouterr().err.count("no saved Google session") == 1
 
 
+class _TtyStream(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def test_queue_prompt_is_owned_by_the_bar_on_a_tty(monkeypatch):
+    """The bar draws the prompt below itself; the CLI adds no extra line."""
+    stream = _TtyStream()
+    terminal = Terminal(stream)
+    seen = []
+
+    def fake_run_once(url, **opts):
+        seen.append(terminal.footer)
+        return 0
+
+    monkeypatch.setattr(main, "run_once", fake_run_once)
+    queue = SpotQueue()
+    queue.enqueue(PLACE_A)
+    result = main.run_queue(
+        [],
+        target=50,
+        trust_threshold=10,
+        as_json=False,
+        terminal=terminal,
+        spot_queue=queue,
+    )
+    assert result == 0
+    assert seen == [main.QUEUE_PROMPT]
+    assert terminal.footer is None
+    assert main.QUEUE_PROMPT not in stream.getvalue()
+
+
+def test_queue_startup_status_is_the_prompt():
+    """The prompt is visible before the first bar frame, then moves below it."""
+    stream = _TtyStream()
+    terminal = Terminal(stream)
+    terminal.footer = main.QUEUE_PROMPT
+
+    class DrawingScraper:
+        def __init__(self, url, target_reviews=None, **kwargs):
+            self.ui = kwargs["ui"]
+
+        def fetch_html(self):
+            bar = self.ui.progress(5, label="Attempt 1/5")
+            bar.update(2)
+            bar.finish()
+            return (FIXTURES / "restaurant.html").read_text(encoding="utf-8")
+
+    code = run_once(
+        PLACE_A,
+        target=50,
+        trust_threshold=10,
+        as_json=True,
+        scraper_factory=DrawingScraper,
+        terminal=terminal,
+    )
+    assert code == 0
+    text = stream.getvalue()
+    # The bar's first frame overwrites the startup prompt, then prints it
+    # again on the row below.
+    assert text.startswith(main.QUEUE_PROMPT + "\r")
+    assert text.count(main.QUEUE_PROMPT) == 2
+
+
+def test_queue_prompt_is_a_plain_line_without_a_bar(monkeypatch):
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    monkeypatch.setattr(main, "run_once", lambda url, **opts: 0)
+    queue = SpotQueue()
+    queue.enqueue(PLACE_A)
+    assert (
+        main.run_queue(
+            [],
+            target=50,
+            trust_threshold=10,
+            as_json=False,
+            terminal=terminal,
+            spot_queue=queue,
+        )
+        == 0
+    )
+    assert main.QUEUE_PROMPT in stream.getvalue().splitlines()
+
+
 def test_queue_notice_renders_each_status_with_place_names():
     stream = io.StringIO()
     terminal = Terminal(stream)

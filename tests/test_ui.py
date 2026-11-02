@@ -107,3 +107,57 @@ def test_disabled_bar_never_erases_the_line():
     bar.update(4)
     terminal.write("Queued: x")
     assert "\033[" not in stream.getvalue()
+
+
+FOOTER = "queue - Enter Google Maps URL (or 'q' to quit):"
+
+
+def test_footer_prompt_is_drawn_below_the_bar_and_redrawn_in_place():
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    terminal.footer = FOOTER
+    bar = terminal.progress(10, label="Loading reviews", enabled=True)
+    bar.update(4)
+    assert stream.getvalue().endswith("\n" + FOOTER)
+    before = stream.getvalue()
+    bar.update(8)
+    # The bar is redrawn above the prompt; the prompt is not reprinted.
+    text = stream.getvalue()
+    assert text.startswith(before)
+    assert text.endswith("\033[u")
+    assert text.count(FOOTER) == 1
+
+
+def test_write_is_inserted_above_a_live_footer():
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    terminal.footer = FOOTER
+    bar = terminal.progress(10, label="Loading reviews", enabled=True)
+    bar.update(4)
+    terminal.write("Queued: x")
+    text = stream.getvalue()
+    # No bar erase/redraw: the block lands between the bar and the prompt,
+    # which is reprinted underneath it.
+    assert "\033[1A\r\033[KQueued: x\n" + FOOTER in text
+    assert text.count("Loading reviews") == 1
+
+
+def test_refresh_footer_reprints_the_prompt_after_a_blank_line():
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    terminal.footer = FOOTER
+    bar = terminal.progress(10, label="Loading reviews", enabled=True)
+    bar.update(4)
+    terminal.refresh_footer()
+    assert stream.getvalue().endswith("\033[1A\r\033[K" + FOOTER)
+
+
+def test_finished_footer_bar_falls_back_to_normal_writes():
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    terminal.footer = FOOTER
+    bar = terminal.progress(10, label="Loading reviews", enabled=True)
+    bar.update(4)
+    bar.finish()
+    terminal.write("Completed in 1.0s.")
+    assert stream.getvalue().endswith("\r\033[KCompleted in 1.0s.\n")

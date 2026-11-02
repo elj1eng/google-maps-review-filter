@@ -116,15 +116,22 @@ with the reason.
 Enter Google Maps URL (or 'q' to quit):
 Queued: Tròn Kitchen
 0. Tròn Kitchen
-queue - Enter Google Maps URL (or 'q' to quit):
 Loading reviews [███░░░░░] 42/210 (20%)
+queue - Enter Google Maps URL (or 'q' to quit):
 Queued: Bến Thành Market
 0. Tròn Kitchen
 1. Bến Thành Market
+Loading reviews [████░░░░] 84/210 (40%)
 queue - Enter Google Maps URL (or 'q' to quit):
 ...
 Queue finished: 2 ok, 0 failed, 0 discarded.
 ```
+
+While a spot loads, the bar stays on one row and the `queue - ...` prompt sits
+directly **below** it. Queued URLs are inserted between the two, so the bar
+keeps updating in place instead of being redrawn for every confirmation.
+Before the first frame (the slow part of startup) the same prompt is shown as
+the status line, so typing never lands on a blank screen.
 
 `0.` is the spot being scraped and `1..` are the URLs still waiting. Names are
 decoded from the `/maps/place/<name>/` slug, so queueing never needs an extra
@@ -169,9 +176,9 @@ batch arrives. It appears only when stderr is a TTY and fits the terminal width
 the bar owns the line, leaving just the bar; a dash rule (up to 60 columns)
 separates retry attempts and consecutive spots in the interactive loop. Under
 `--verbose` or piped output the bar is replaced with the usual log lines
-(`--json` stdout stays clean either way). In queue mode, a URL accepted while
-the bar is drawing erases the frame for a one-line confirmation and the bar
-redraws on the next batch.
+(`--json` stdout stays clean either way). In queue mode the prompt lives on the
+row below the bar: a URL accepted while it draws is inserted above the prompt
+and the bar redraws in place, so confirmations never restart the bar.
 
 ### Signed-in sessions (`--login`)
 

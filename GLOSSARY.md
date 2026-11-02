@@ -199,8 +199,9 @@ status line, separators, and progress-bar creation. Nothing else writes to
 stderr directly. It is thread-safe (reentrant lock) because the queue reader
 reports accepted URLs while the main thread redraws the bar.
 - **In code:** `ui.Terminal` (`write`, `status`, `separator`, `progress`).
-- **Note:** `write` erases a live bar frame (`\r\033[K`) first, and only when
-  the bar is enabled, so piped stderr stays free of escape codes.
+- **Note:** with a footer, `write` inserts the line between bar and prompt;
+  without one it erases a live frame (`\r\033[K`) first. Both are gated on the
+  bar being enabled, so piped stderr stays free of escape codes.
 
 ### Status line
 A no-newline stderr line such as `Opening Google Maps...`. It is either closed
@@ -212,6 +213,14 @@ Single-line redraw of loaded cards (`Loading reviews [██░░] 42/210 (20%)
 width-fitted so it never wraps, TTY-only, and disabled by `--verbose`.
 - **In code:** `progress.ReviewProgress`.
 - **Not:** the status line, though the bar takes over the same terminal line.
+
+### Footer
+The `queue - Enter Google Maps URL...` prompt printed on the row **below** the
+bar while a spot loads. Later frames redraw only the bar above it; notices are
+inserted between them, so the prompt and anything being typed survive.
+- **In code:** `ReviewProgress(footer=...)`, `ReviewProgress.notify`,
+  `Terminal.footer` (set by `cli.run_queue`).
+- **Not:** the idle prompt, which is a normal line printed when nothing runs.
 
 ### Dash rule
 A `-` separator between retry attempts and between interactive spots:
