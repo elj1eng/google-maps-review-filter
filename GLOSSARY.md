@@ -244,11 +244,12 @@ time, so a non-place URL is rejected immediately instead of after a crawl.
   `SpotQueue.pending()`, `SpotQueue.pending_urls()`.
 
 ### Queue label
-The name shown for a queued spot, decoded from the `/maps/place/<name>/` slug
-(no extra request). Short links have no name until Google resolves them, so
-they fall back to host + path.
-- **In code:** `urls.place_label`; used by `cli._queue_notice` and
-  `cli._QueueView`.
+The name shown for a queued spot, decoded from the `/maps/place/<name>/` slug.
+Short links carry no name, so they are resolved once when queued (a bounded
+redirect chain, no page body) and the final place slug becomes the label. If
+that fails, the label falls back to host + path.
+- **In code:** `urls.place_label`, `urls.resolve_short_link`;
+  `SpotQueue.label`; used by `cli._QueueView`.
 - **Not:** `PlaceSummary.name`, which is the authoritative name parsed from
   the scraped page header.
 

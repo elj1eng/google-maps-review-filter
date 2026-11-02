@@ -17,7 +17,7 @@ from enum import StrEnum
 from typing import TextIO
 
 from gmaps_review_filter.errors import PermanentScrapeError
-from gmaps_review_filter.urls import validate_place_url
+from gmaps_review_filter.urls import place_label, resolve_short_link, validate_place_url
 
 # Lines that ask the reader to stop instead of adding a spot.
 STOP_WORDS = frozenset({"q", "quit", "exit"})
@@ -52,9 +52,13 @@ class SpotQueue:
       were already queued before ``next()`` returns ``None``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, resolve: Callable[[str], str | None] | None = None) -> None:
         self._items: deque[str] = deque()
         self._seen: set[str] = set()
+        self._labels: dict[str, str] = {}
+        # Short links carry no name; one redirect resolves the real place
+        # slug for display. Injectable so tests never touch the network.
+        self._resolve = resolve_short_link if resolve is None else resolve
         self._cond = threading.Condition()
         self._closed = False
         self._stopped = False
@@ -82,6 +86,12 @@ class SpotQueue:
         with self._cond:
             return list(self._items)
 
+    def label(self, url: str) -> str:
+        """Display name for a queued URL (resolved short link when known)."""
+        with self._cond:
+            label = self._labels.get(url)
+        return place_label(url) if label is None else label
+
     def enqueue(self, raw: str) -> EnqueueResult:
         """Validate, dedupe and append one URL. Never blocks on the reader."""
         url = (raw or "").strip()
@@ -99,7 +109,16 @@ class SpotQueue:
                 return EnqueueResult(QueueStatus.STOPPED, url)
             if url in self._seen:
                 return EnqueueResult(QueueStatus.DUPLICATE, url)
+        # Resolving follows one redirect, so keep it out of the lock: the
+        # main thread must still be able to drain and redraw meanwhile.
+        label = place_label(self._resolve(url) or url)
+        with self._cond:
+            if self._stopped:
+                return EnqueueResult(QueueStatus.STOPPED, url)
+            if url in self._seen:
+                return EnqueueResult(QueueStatus.DUPLICATE, url)
             self._seen.add(url)
+            self._labels[url] = label
             self._items.append(url)
             self._cond.notify()
         return EnqueueResult(QueueStatus.QUEUED, url)

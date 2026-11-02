@@ -1,6 +1,7 @@
 """Place-URL validation, before any browser work."""
 
 import urllib.parse
+import urllib.request
 
 from gmaps_review_filter.errors import PermanentScrapeError
 
@@ -12,6 +13,10 @@ GOOGLE_DOMAINS = ("google.com", "google.com.vn")
 
 # Short links that redirect to a place page.
 SHORT_HOSTS = ("maps.app.goo.gl", "goo.gl")
+
+# One redirect hop for display labels; short enough to never stall queueing.
+SHORT_LINK_TIMEOUT_S = 5.0
+USER_AGENT = "Mozilla/5.0 (compatible; gmaps-review-filter)"
 
 
 def is_google_host(host: str) -> bool:
@@ -42,6 +47,44 @@ def place_label(url: str) -> str:
             return name
     fallback = f"{parsed.netloc}{parsed.path}".strip("/")
     return fallback or cleaned
+
+
+def resolve_short_link(
+    url: str, *, timeout: float = SHORT_LINK_TIMEOUT_S
+) -> str | None:
+    """Follow a Maps short link to the place URL it points at, if possible.
+
+    Only the short-host allowlist is resolved, and the final URL must be a
+    Google place page. Any failure (offline, consent wall, timeout) returns
+    ``None`` so queueing falls back to the short link's host + path instead
+    of blocking on the network.
+    """
+    cleaned = (url or "").strip()
+    try:
+        parsed = urllib.parse.urlparse(cleaned)
+        host = (parsed.hostname or "").lower().rstrip(".")
+    except ValueError:
+        return None
+    if parsed.scheme not in ("http", "https") or host not in SHORT_HOSTS:
+        return None
+    request = urllib.request.Request(  # noqa: S310 - http(s) + allowlist above
+        cleaned, headers={"User-Agent": USER_AGENT}
+    )
+    try:
+        # The URL is restricted to the short-link allowlist above; only the
+        # redirect target is read, never the response body.
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+            final = str(response.geturl())
+    except Exception:
+        return None
+    try:
+        final_parsed = urllib.parse.urlparse(final)
+        final_host = (final_parsed.hostname or "").lower()
+    except ValueError:
+        return None
+    if is_google_host(final_host) and "/maps/place/" in final_parsed.path:
+        return final
+    return None
 
 
 def validate_place_url(url: str) -> str:

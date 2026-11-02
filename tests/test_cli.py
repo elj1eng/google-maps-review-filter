@@ -747,6 +747,19 @@ def test_queue_view_numbers_current_and_pending_spots():
     assert stream.getvalue().endswith("Queued: C\n0. A\n1. B\n2. C\n")
 
 
+def test_queue_view_uses_the_resolved_short_link_label():
+    short = "https://maps.app.goo.gl/abc123"
+    queue = SpotQueue(resolve=lambda url: PLACE_A)
+    stream = io.StringIO()
+    view = main._QueueView(queue, Terminal(stream))
+    view.notice(queue.enqueue(short))
+    view.start(short)
+    text = stream.getvalue()
+    assert "Queued: A\n" in text
+    assert "0. A\n" in text
+    assert "maps.app.goo.gl" not in text
+
+
 def test_queue_view_reports_queued_spots_while_idle():
     queue = SpotQueue()
     stream = io.StringIO()

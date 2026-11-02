@@ -28,7 +28,62 @@ def test_enqueue_strips_surrounding_whitespace():
 
 
 def test_enqueue_accepts_a_short_link():
-    assert SpotQueue().enqueue(SHORT).status is QueueStatus.QUEUED
+    queue = SpotQueue(resolve=lambda url: None)
+    assert queue.enqueue(SHORT).status is QueueStatus.QUEUED
+
+
+def test_enqueue_resolves_a_short_link_label():
+    queue = SpotQueue(resolve=lambda url: PLACE_A)
+    assert queue.enqueue(SHORT).status is QueueStatus.QUEUED
+    assert queue.label(SHORT) == "A"
+
+
+def test_short_link_label_falls_back_when_resolution_fails():
+    queue = SpotQueue(resolve=lambda url: None)
+    queue.enqueue(SHORT)
+    assert queue.label(SHORT) == "maps.app.goo.gl/abc123"
+
+
+def test_stop_during_short_link_resolution_is_refused():
+    def stop_then_fail(url):
+        queue.request_stop()
+        return None
+
+    queue = SpotQueue(resolve=stop_then_fail)
+    assert queue.enqueue(SHORT).status is QueueStatus.STOPPED
+    assert queue.pending() == 0
+
+
+def test_concurrent_short_link_enqueue_dedupes_after_resolution():
+    """Two readers can pass the first dedupe check before either resolves."""
+    barrier = threading.Barrier(2, timeout=2)
+    queue = SpotQueue(resolve=lambda url: (barrier.wait(), None)[1])
+    results = []
+    threads = [
+        threading.Thread(target=lambda: results.append(queue.enqueue(SHORT)))
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+    assert {result.status for result in results} == {
+        QueueStatus.QUEUED,
+        QueueStatus.DUPLICATE,
+    }
+    assert len(results) == 2
+    assert queue.pending() == 1
+
+
+def test_place_url_label_comes_from_the_slug():
+    queue = SpotQueue(resolve=lambda url: None)
+    queue.enqueue(PLACE_A)
+    assert queue.label(PLACE_A) == "A"
+
+
+def test_unknown_url_label_decodes_the_slug():
+    queue = SpotQueue(resolve=lambda url: None)
+    assert queue.label(PLACE_B) == "B"
 
 
 def test_enqueue_rejects_a_non_google_url():
@@ -130,7 +185,7 @@ def test_stop_during_validation_is_refused(monkeypatch):
 
 
 def test_reader_enqueues_lines_and_closes_on_eof():
-    queue = SpotQueue()
+    queue = SpotQueue(resolve=lambda url: None)
     results = []
     queue.start_reader(
         io.StringIO(f"\n {PLACE_A} \n{SHORT}\n"),

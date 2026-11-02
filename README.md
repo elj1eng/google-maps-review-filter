@@ -134,9 +134,11 @@ Before the first frame (the slow part of startup) the same prompt is shown as
 the status line, so typing never lands on a blank screen.
 
 `0.` is the spot being scraped and `1..` are the URLs still waiting. Names are
-decoded from the `/maps/place/<name>/` slug, so queueing never needs an extra
-request; short links show their host and path until the spot finishes (the
-report then carries the real name).
+decoded from the `/maps/place/<name>/` slug. Short links (`maps.app.goo.gl`)
+are resolved once when queued — a bounded redirect chain with a 5 s timeout,
+no page body — so the real name appears immediately; if the lookup fails
+(offline, consent wall), the label falls back to host + path and the report
+still carries the real name once the spot is scraped.
 
 - `q` (or `quit`/`exit`) finishes the current spot, drops anything still
   pending, and exits.

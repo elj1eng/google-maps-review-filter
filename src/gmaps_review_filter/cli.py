@@ -176,12 +176,17 @@ def _stdin_is_tty() -> bool:
         return False
 
 
-def _notice_text(result: EnqueueResult) -> str | None:
-    """Human line for one enqueue outcome, or None when it is silent."""
+def _notice_text(result: EnqueueResult, label: str | None = None) -> str | None:
+    """Human line for one enqueue outcome, or None when it is silent.
+
+    ``label`` is the queue's display name (short links resolved); when it is
+    missing the URL's own slug is decoded instead.
+    """
+    name = place_label(result.url) if label is None else label
     if result.status is QueueStatus.QUEUED:
-        return f"Queued: {place_label(result.url)}"
+        return f"Queued: {name}"
     if result.status is QueueStatus.DUPLICATE:
-        return f"Already queued: {place_label(result.url)}"
+        return f"Already queued: {name}"
     if result.status is QueueStatus.REJECTED:
         return f"Skipped ({result.reason}): {result.url}"
     # STOPPED: the run is shutting down; stay quiet.
@@ -233,7 +238,7 @@ class _QueueView:
         """
         with self._lock:
             lines: list[str] = []
-            text = _notice_text(result)
+            text = _notice_text(result, self._queue.label(result.url))
             if text is not None:
                 lines.append(text)
             if result.status is QueueStatus.QUEUED and self._current is not None:
@@ -242,9 +247,9 @@ class _QueueView:
                 self._terminal.write("\n".join(lines))
 
     def _rows(self, current: str) -> list[str]:
-        rows = [f"0. {place_label(current)}"]
+        rows = [f"0. {self._queue.label(current)}"]
         for index, url in enumerate(self._queue.pending_urls(), start=1):
-            rows.append(f"{index}. {place_label(url)}")
+            rows.append(f"{index}. {self._queue.label(url)}")
         return rows
 
 

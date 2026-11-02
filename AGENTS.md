@@ -154,9 +154,11 @@ Pipeline: `cli.run_once` → `MapsScraper.fetch_html` (retry loop) →
 - Typed characters can still visually collide with a redrawing bar until Enter
   is pressed; the `Queued: <name>` confirmation is the source of truth. Do not
   add raw-mode/termios handling for this.
-- Queue labels come from the `/maps/place/<name>/` slug (`urls.place_label`),
-  not from a network lookup. Short links stay labelled by host + path until
-  scraped; do not add a redirect resolver just for display.
+- Queue labels come from the `/maps/place/<name>/` slug (`urls.place_label`).
+  Short links are resolved once at enqueue time (`urls.resolve_short_link`,
+  bounded redirect chain with a 5 s timeout, no page body) so the real name
+  shows immediately; on any failure they fall back to host + path. Never
+  scrape or launch a browser from the reader thread for a label.
 - The version is duplicated in `src/gmaps_review_filter/__init__.py` and
   `pyproject.toml`; `test_cli.py` enforces they match.
 - `auth.json` is a credential: mode 600, gitignored, never commit it.
