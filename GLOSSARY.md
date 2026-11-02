@@ -191,12 +191,16 @@ The `--json` contract: `schema_version`, `source{url,requested_target}`,
 facts are `null`.
 - **In code:** `report.to_dict`, `report.SCHEMA_VERSION`.
 - **Not:** the human layout, which is separate and intentionally unchanged.
+- **Queue mode:** the same v1 objects, one compact line each (see NDJSON).
 
 ### Terminal
 The stderr presenter shared by CLI and scraper: complete lines, a single
 status line, separators, and progress-bar creation. Nothing else writes to
-stderr directly.
+stderr directly. It is thread-safe (reentrant lock) because the queue reader
+reports accepted URLs while the main thread redraws the bar.
 - **In code:** `ui.Terminal` (`write`, `status`, `separator`, `progress`).
+- **Note:** `write` erases a live bar frame (`\r\033[K`) first, and only when
+  the bar is enabled, so piped stderr stays free of escape codes.
 
 ### Status line
 A no-newline stderr line such as `Opening Google Maps...`. It is either closed
@@ -213,6 +217,45 @@ width-fitted so it never wraps, TTY-only, and disabled by `--verbose`.
 A `-` separator between retry attempts and between interactive spots:
 `max(10, min(columns - 1, 60))` characters wide.
 - **In code:** `ui.Terminal.rule`, `MIN_RULE`, `MAX_RULE`.
+
+## Queue mode
+
+### Queue mode
+Automatic when stdin is a TTY (and `--no-queue` is absent): a reader thread
+keeps accepting URLs while the main thread scrapes, so typing never waits for
+a crawl to finish.
+- **In code:** `cli.run_queue`, `cli._stdin_is_tty`, `spot_queue.SpotQueue`.
+- **Not:** the non-TTY interactive loop, which still uses `input()` between
+  spots and is unchanged for scripts and tests.
+
+### Queued spot
+A URL accepted by the queue but not started yet. It is validated at enqueue
+time, so a non-place URL is rejected immediately instead of after a crawl.
+- **In code:** `spot_queue.EnqueueResult`, `QueueStatus.QUEUED`;
+  `SpotQueue.pending()`.
+
+### Duplicate
+A URL already accepted this session (compared after validation and
+whitespace stripping). Reported as `Already queued` and not re-run.
+- **In code:** `SpotQueue._seen`, `QueueStatus.DUPLICATE`.
+
+### Stop word
+`q`, `quit` or `exit` typed on its own line. It stops the run after the spot
+currently loading and **discards** anything still pending.
+- **In code:** `spot_queue.STOP_WORDS`, `SpotQueue.request_stop`.
+
+### Graceful stop
+Shutdown that lets accepted work finish. EOF (`Ctrl-D`) is graceful: no new
+URLs, but already-queued spots still run. The `q` stop word is not: it drops
+pending spots after the current one.
+- **In code:** `SpotQueue.close` (EOF) vs `SpotQueue.request_stop` (`q`).
+- **Not:** Ctrl-C, which aborts the current scrape immediately (exit `130`).
+
+### NDJSON
+Queue-mode `--json` output: one compact schema v1 object per line, each with
+its own `source.url`. `--no-queue --json` keeps the pretty single object.
+- **In code:** `cli.run_queue` (passes `ndjson=True` to `run_once`).
+- **Not:** a new schema — each line is still schema v1.
 
 ## Testing
 

@@ -1,5 +1,6 @@
 """Tests for CLI helpers and locale matching (offline)."""
 
+import io
 import json
 import logging
 import os
@@ -22,6 +23,12 @@ from gmaps_review_filter.errors import (
 )
 from gmaps_review_filter.locale import detect_lang, matches_any
 from gmaps_review_filter.scraper import MapsScraper
+from gmaps_review_filter.spot_queue import (
+    EnqueueResult,
+    QueueStatus,
+    SpotQueue,
+)
+from gmaps_review_filter.ui import Terminal
 from tests.test_analyzer import FIXTURES
 
 
@@ -472,3 +479,240 @@ def test_human_report_path_prints_the_text_report(monkeypatch, capsys):
     assert "ANALYSIS (Sample:" in out
     assert "Peter Luger Steak House" in out
     assert '"schema_version"' not in out
+
+
+# --- queue mode ---
+
+PLACE_A = "https://www.google.com/maps/place/A"
+PLACE_B = "https://www.google.com/maps/place/B"
+
+
+def _queue_run(monkeypatch, urls, *, code=0, as_json=True, queue=None):
+    """Drive run_queue with an injected queue and a fake run_once."""
+    calls = []
+
+    def fake_run_once(url, **opts):
+        calls.append(url)
+        return code(url) if callable(code) else code
+
+    monkeypatch.setattr(main, "run_once", fake_run_once)
+    result = main.run_queue(
+        urls,
+        target=50,
+        trust_threshold=10,
+        as_json=as_json,
+        spot_queue=queue if queue is not None else SpotQueue(),
+    )
+    return result, calls
+
+
+def test_queue_processes_seeded_urls_in_order(monkeypatch):
+    result, calls = _queue_run(monkeypatch, [PLACE_A, PLACE_B])
+    assert result == 0
+    assert calls == [PLACE_A, PLACE_B]
+
+
+def test_queue_picks_up_a_url_added_while_a_spot_loads(monkeypatch):
+    """A URL typed mid-scrape is processed after the current spot."""
+    queue = SpotQueue()
+    queue.enqueue(PLACE_A)
+    calls = []
+
+    def fake_run_once(url, **opts):
+        calls.append(url)
+        if len(calls) == 1:
+            queue.enqueue(PLACE_B)
+        return 0
+
+    monkeypatch.setattr(main, "run_once", fake_run_once)
+    result = main.run_queue(
+        [], target=50, trust_threshold=10, as_json=False, spot_queue=queue
+    )
+    assert result == 0
+    assert calls == [PLACE_A, PLACE_B]
+
+
+def test_queue_continues_after_a_failed_spot(monkeypatch):
+    result, calls = _queue_run(
+        monkeypatch,
+        [PLACE_A, PLACE_B],
+        code=lambda url: 1 if url == PLACE_A else 0,
+    )
+    assert calls == [PLACE_A, PLACE_B]
+    assert result == 1
+
+
+def test_queue_exit_code_keeps_the_worst_failure(monkeypatch):
+    result, _ = _queue_run(
+        monkeypatch,
+        [PLACE_A, PLACE_B],
+        code=lambda url: 2 if url == PLACE_A else 1,
+    )
+    assert result == 2
+
+
+def test_queue_stop_word_discards_pending_spots(monkeypatch, capsys):
+    queue = SpotQueue()
+    queue.enqueue(PLACE_A)
+    queue.enqueue(PLACE_B)
+    calls = []
+
+    def fake_run_once(url, **opts):
+        calls.append(url)
+        queue.request_stop()  # the user typed q while this spot loaded
+        return 0
+
+    monkeypatch.setattr(main, "run_once", fake_run_once)
+    result = main.run_queue(
+        [], target=50, trust_threshold=10, as_json=True, spot_queue=queue
+    )
+    assert result == 0
+    assert calls == [PLACE_A]
+    assert "1 discarded" in capsys.readouterr().err
+
+
+def test_queue_ctrl_c_exits_130(monkeypatch, capsys):
+    def interrupted(url, **opts):
+        raise KeyboardInterrupt
+
+    queue = SpotQueue()
+    queue.enqueue(PLACE_A)
+    queue.enqueue(PLACE_B)
+    monkeypatch.setattr(main, "run_once", interrupted)
+    result = main.run_queue(
+        [], target=50, trust_threshold=10, as_json=True, spot_queue=queue
+    )
+    assert result == main.EXIT_INTERRUPTED == 130
+    err = capsys.readouterr().err
+    assert "Interrupted" in err
+    assert "1 queued spot(s) discarded" in err
+
+
+def test_queue_prints_a_header_and_rule_between_spots(monkeypatch, capsys):
+    _queue_run(monkeypatch, [PLACE_A, PLACE_B], as_json=False)
+    err = capsys.readouterr().err
+    assert f"Spot: {PLACE_A}" in err
+    assert f"Spot: {PLACE_B}" in err
+    assert len(_rules(err)) == 1
+    assert "Queue finished: 2 ok, 0 failed, 0 discarded." in err
+
+
+def test_queue_json_is_one_object_per_line(capsys):
+    result = main.run_queue(
+        [PLACE_A, PLACE_B],
+        target=50,
+        trust_threshold=10,
+        as_json=True,
+        scraper_factory=_fixture_factory("restaurant.html"),
+        stdin=io.StringIO(""),
+    )
+    assert result == 0
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert len(lines) == 2
+    payloads = [json.loads(line) for line in lines]
+    assert [payload["source"]["url"] for payload in payloads] == [PLACE_A, PLACE_B]
+    assert all(payload["schema_version"] == 1 for payload in payloads)
+
+
+def test_queue_prints_the_auth_hint_once(capsys, tmp_path):
+    settings = replace(DEFAULT_SETTINGS, auth_state_path=str(tmp_path / "absent.json"))
+    main.run_queue(
+        [PLACE_A, PLACE_B],
+        target=50,
+        trust_threshold=10,
+        as_json=True,
+        scraper_factory=_fixture_factory("restaurant.html"),
+        settings=settings,
+        stdin=io.StringIO(""),
+    )
+    assert capsys.readouterr().err.count("no saved Google session") == 1
+
+
+def test_queue_notice_renders_each_status():
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    main._queue_notice(EnqueueResult(QueueStatus.QUEUED, PLACE_A), terminal)
+    main._queue_notice(EnqueueResult(QueueStatus.DUPLICATE, PLACE_A), terminal)
+    main._queue_notice(EnqueueResult(QueueStatus.REJECTED, "x", "bad"), terminal)
+    main._queue_notice(EnqueueResult(QueueStatus.STOPPED, "y"), terminal)
+    assert stream.getvalue() == (
+        f"Queued: {PLACE_A}\nAlready queued: {PLACE_A}\nSkipped (bad): x\n"
+    )
+
+
+def test_announce_waiting_only_when_the_queue_is_idle_and_open():
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    idle = SpotQueue()
+    main._announce_waiting(idle, terminal)
+    assert "Waiting for URLs" in stream.getvalue()
+
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    pending = SpotQueue()
+    pending.enqueue(PLACE_A)
+    main._announce_waiting(pending, terminal)
+    assert stream.getvalue() == ""
+
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    closed = SpotQueue()
+    closed.close()
+    main._announce_waiting(closed, terminal)
+    assert stream.getvalue() == ""
+
+
+def test_run_once_ndjson_is_one_compact_line(capsys):
+    code = _run(factory=_fixture_factory("restaurant.html"), ndjson=True)
+    assert code == 0
+    out = capsys.readouterr().out
+    assert out.count("\n") == 1
+    assert json.loads(out)["schema_version"] == 1
+
+
+def test_stdin_is_tty_tolerates_unreadable_stdin(monkeypatch):
+    class Broken:
+        def isatty(self):
+            raise RuntimeError("closed")
+
+    monkeypatch.setattr(sys, "stdin", Broken())
+    assert main._stdin_is_tty() is False
+
+
+def test_stdin_is_tty_true(monkeypatch):
+    class Tty:
+        def isatty(self):
+            return True
+
+    monkeypatch.setattr(sys, "stdin", Tty())
+    assert main._stdin_is_tty() is True
+
+
+def test_main_uses_queue_mode_on_a_tty(monkeypatch):
+    seen = {}
+
+    def fake_queue(urls, **opts):
+        seen["urls"] = urls
+        return 0
+
+    monkeypatch.setattr(main, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(main, "run_queue", fake_queue)
+    assert main.main([PLACE_A]) == 0
+    assert seen["urls"] == [PLACE_A]
+
+
+def test_no_queue_flag_keeps_the_one_shot_path(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main, "_stdin_is_tty", lambda: True)
+    monkeypatch.setattr(main, "run_queue", lambda *a, **k: pytest.fail("queue used"))
+    monkeypatch.setattr(main, "run_once", lambda url, **opts: calls.append(url) or 0)
+    assert main.main([PLACE_A, "--no-queue"]) == 0
+    assert calls == [PLACE_A]
+
+
+def test_piped_stdin_keeps_the_scripted_loop(monkeypatch, capsys):
+    monkeypatch.setattr(main, "_stdin_is_tty", lambda: False)
+    monkeypatch.setattr(main, "run_queue", lambda *a, **k: pytest.fail("queue used"))
+    monkeypatch.setattr("builtins.input", lambda prompt="": "q")
+    assert main.main([]) == 0
+    assert "Goodbye!" in capsys.readouterr().out

@@ -83,7 +83,8 @@ uv run gmaps-filter
 ```
 
 In interactive mode, each spot's report is closed with the same width-aware
-dash rule before the next prompt (skipped with `--json`).
+dash rule before the next prompt (skipped with `--json`). On a terminal, the
+prompt no longer waits for a scrape to finish — see [Queue mode](#queue-mode).
 
 Options:
 
@@ -93,12 +94,46 @@ Options:
 | `--trust-threshold N` | 10 | reviewers above N reviews count as trusted |
 | `--json` | off | machine-readable JSON on stdout (diagnostics go to stderr) |
 | `--verbose` | off | debug logging from the scraper |
+| `--no-queue` | off | exit after one spot instead of accepting URLs while it loads |
 | `--login` | off | open the `accounts.google.com` sign-in page in a headed browser, then save the session |
 | `--auth PATH` | `~/.config/gmaps-filter/auth.json` | saved session file used for scraping |
 | `--version` | — | print the installed version and exit |
 
 Exit codes: `0` success, `1` scrape/analysis failure, `2` bad URL or invalid
-arguments (`--target` must be > 0, `--trust-threshold` >= 0).
+arguments (`--target` must be > 0, `--trust-threshold` >= 0), `130` Ctrl-C in
+queue mode. In queue mode the exit code is the worst result of the batch
+(`2` beats `1` beats `0`).
+
+### Queue mode
+
+When stdin is a terminal, the CLI keeps accepting URLs **while a spot is
+loading**. Type or paste a Google Maps URL and press Enter: it is queued
+(`Queued: <url>` on stderr) and scraped as soon as the current spot finishes.
+The queue is FIFO, and duplicates or non-place URLs are skipped immediately
+with the reason.
+
+```text
+Spot: https://www.google.com/maps/place/...
+<report>
+Queue: 2 spot(s) waiting.
+------------------------------------------------------------
+Spot: https://www.google.com/maps/place/...
+<report>
+Queue finished: 2 ok, 0 failed, 0 discarded.
+```
+
+- `q` (or `quit`/`exit`) finishes the current spot, drops anything still
+  pending, and exits.
+- `Ctrl-C` aborts the current scrape immediately (exit `130`).
+- `Ctrl-D` (EOF) lets already-queued spots finish, then exits.
+- `--no-queue` restores the old behavior: one spot, then exit.
+
+Queue mode is automatic only on a TTY (`--login` never uses it). With piped
+stdin, scripts keep the previous one-URL-at-a-time loop. With `--json`, queue
+mode emits **NDJSON**:
+one compact schema v1 object per line, each carrying its own `source.url`, so
+stdout stays a valid stream (`--no-queue --json` keeps the pretty
+single-object form).
 
 Human output is colored only when stdout is a TTY; piped output and
 `NO_COLOR=1` are plain text. `--json` emits schema v1:
@@ -125,7 +160,9 @@ batch arrives. It appears only when stderr is a TTY and fits the terminal width
 the bar owns the line, leaving just the bar; a dash rule (up to 60 columns)
 separates retry attempts and consecutive spots in the interactive loop. Under
 `--verbose` or piped output the bar is replaced with the usual log lines
-(`--json` stdout stays clean either way).
+(`--json` stdout stays clean either way). In queue mode, a URL accepted while
+the bar is drawing erases the frame for a one-line confirmation and the bar
+redraws on the next batch.
 
 ### Signed-in sessions (`--login`)
 
@@ -163,7 +200,8 @@ Average rating (trusted only): 4.44 / 5
 
 ## Project Structure
 
-- `src/gmaps_review_filter/cli.py`: argparse CLI (`--target`, `--trust-threshold`, `--json`, `--verbose`, `--login`, `--auth`, `--version`), exit codes 0/1/2, human/JSON output.
+- `src/gmaps_review_filter/cli.py`: argparse CLI (`--target`, `--trust-threshold`, `--json`, `--verbose`, `--no-queue`, `--login`, `--auth`, `--version`), queue loop, exit codes 0/1/2/130, human/JSON output.
+- `src/gmaps_review_filter/spot_queue.py`: queue-mode URL intake — stdin reader thread, FIFO, dedupe, `q`/EOF semantics.
 - `src/gmaps_review_filter/scraper.py`: orchestration — retry policy, Reviews tab, hotel Google-only filter.
 - `src/gmaps_review_filter/session.py`: one throwaway headless browser context per attempt.
 - `src/gmaps_review_filter/auth.py`: saved-session detection/restore and the `--login` flow.

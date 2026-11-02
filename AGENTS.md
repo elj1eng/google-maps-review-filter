@@ -45,7 +45,8 @@ Pipeline: `cli.run_once` → `MapsScraper.fetch_html` (retry loop) →
 
 | Module | Responsibility |
 |---|---|
-| `cli.py` | argparse, exit codes, one-shot/interactive flow, report printing |
+| `cli.py` | argparse, exit codes, one-shot/interactive/queue flow, report printing |
+| `spot_queue.py` | Queue-mode stdin reader: FIFO, dedupe, stop/EOF semantics |
 | `scraper.py` | Retry policy, Reviews tab, hotel Google-only filter, stub guard |
 | `session.py` | One throwaway headless browser context per attempt |
 | `auth.py` | Saved-session detection/restore, `--login` flow |
@@ -71,10 +72,16 @@ Pipeline: `cli.run_once` → `MapsScraper.fetch_html` (retry loop) →
 - **Missing data is `None`, never `"N/A"`.** The sentinel exists only in
   `report.format_human`. JSON emits `null`.
 - **JSON schema v1 is a public contract.** Changing field names/shape requires
-  a `schema_version` bump and README update; additive fields are fine.
+  a `schema_version` bump and README update; additive fields are fine. In queue
+  mode `--json` is NDJSON (one compact v1 object per line); one-shot keeps the
+  pretty single object.
 - **Only the CLI prints the report.** `scraper.py`, `dom.py`, `scroll.py`,
   `session.py` must not `print()`; use the injected `Terminal` (stderr).
   stdout carries the report only, so `--json` stays pipeable.
+- **The queue reader thread never touches Playwright.** It only reads stdin and
+  appends to `SpotQueue`; scraping stays on the main thread. All stderr output
+  goes through the thread-safe `Terminal`, which erases a live bar frame before
+  writing a complete line.
 - **ANSI is gated.** Color only when stdout is a TTY and `NO_COLOR` is unset;
   the bar only when stderr is a TTY and `--verbose` is off.
 - **Host allowlist is deliberate:** `google.com`, `google.com.vn` and their
@@ -99,6 +106,7 @@ Pipeline: `cli.run_once` → `MapsScraper.fetch_html` (retry loop) →
 | JSON or human layout | `report.py`, `test_report.py`, README schema example |
 | CLI flag or exit code | `cli.py` (`build_parser`), `test_cli.py`, README options |
 | Retry/flow/tab/filter behavior | `scraper.py`, `test_scraper_flow.py` |
+| Queue mode / stdin intake | `spot_queue.py`, `cli.run_queue`, `test_spot_queue.py`, `test_cli.py` |
 | Browser/session/login | `session.py`, `auth.py`, `test_session.py`, `test_auth.py` |
 | Scroll behavior | `scroll.py`, `dom.py`, `test_scroll.py`, `test_dom.py` |
 | Defaults/tuning | `config.py`, `test_config.py`, README tuning note |
@@ -110,6 +118,9 @@ Pipeline: `cli.run_once` → `MapsScraper.fetch_html` (retry loop) →
   scraper through `tests/fakes.py` (fake Playwright stack).
 - Inject settings with `replace(DEFAULT_SETTINGS, ...)` instead of patching
   globals; patch `time.sleep` in flow tests to keep them instant.
+- pytest's stdin is not a TTY, so queue mode never activates by itself in
+  tests. Drive `run_queue` with `spot_queue=SpotQueue()` (treated as complete)
+  or `stdin=StringIO(...)`; pre-fill the queue instead of sleeping on threads.
 - Golden fixtures are trimmed real pages (`tests/fixtures/`, provenance in the
   file header). `hotel_mixed.html` is archival (pre-filter mixed feed) and is
   intentionally not refreshed; live scrapes return Google-only feeds.
@@ -131,7 +142,12 @@ Pipeline: `cli.run_once` → `MapsScraper.fetch_html` (retry loop) →
 - Re-resolve the scroll pane after stalls: Playwright handles go stale as Maps
   re-renders the list.
 - The progress bar and logging share stderr. Call `progress.finish()` before
-  logging, or the log text appends to the bar frame.
+  logging, or the log text appends to the bar frame. `Terminal.write` handles
+  the queue case: it erases a live frame (`\r\033[K`) before the line, and only
+  when the bar is enabled, so piped stderr never sees escape codes.
+- Typed characters can still visually collide with a redrawing bar until Enter
+  is pressed; the `Queued: <url>` confirmation is the source of truth. Do not
+  add raw-mode/termios handling for this.
 - The version is duplicated in `src/gmaps_review_filter/__init__.py` and
   `pyproject.toml`; `test_cli.py` enforces they match.
 - `auth.json` is a credential: mode 600, gitignored, never commit it.

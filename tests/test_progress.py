@@ -108,6 +108,30 @@ def test_zero_total_never_divides_by_zero():
     assert stream.text.endswith(f"[{EMPTY * 20}] 5/0 (0%)\033[K")
 
 
+def test_finish_calls_on_finish_once():
+    calls = []
+    stream = _TtyStream()
+    progress = ReviewProgress(
+        10, stream=stream, enabled=True, on_finish=lambda: calls.append(1)
+    )
+    progress.finish()
+    progress.finish()
+    assert calls == [1]
+
+
+def test_finish_calls_on_finish_even_without_updates():
+    """An unused bar still has to release the terminal line."""
+    calls = []
+    progress = ReviewProgress(
+        10,
+        stream=_PipeStream(),
+        enabled=False,
+        on_finish=lambda: calls.append(1),
+    )
+    progress.finish()
+    assert calls == [1]
+
+
 def test_unreadable_stream_disables_the_bar():
     class _Broken:
         def isatty(self):

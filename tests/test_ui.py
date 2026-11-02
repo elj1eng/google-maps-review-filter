@@ -76,3 +76,34 @@ def test_close_status_is_idempotent():
     terminal.close_status()
     terminal.close_status()
     assert stream.getvalue() == "x\n"
+
+
+def test_write_erases_an_active_bar_frame():
+    """A queued-URL confirmation must not land inside the bar frame."""
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    bar = terminal.progress(10, label="Loading reviews", enabled=True)
+    bar.update(4)
+    terminal.write("Queued: x")
+    text = stream.getvalue()
+    assert "\r\033[K" in text
+    assert text.endswith("Queued: x\n")
+
+
+def test_finished_bar_is_not_erased_again():
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    bar = terminal.progress(10, label="Loading reviews", enabled=True)
+    bar.update(4)
+    bar.finish()
+    terminal.write("Queue finished")
+    assert "\033[K" not in stream.getvalue().split("Queue finished")[1]
+
+
+def test_disabled_bar_never_erases_the_line():
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    bar = terminal.progress(10, label="Loading reviews", enabled=False)
+    bar.update(4)
+    terminal.write("Queued: x")
+    assert "\033[" not in stream.getvalue()

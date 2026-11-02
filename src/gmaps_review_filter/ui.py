@@ -8,6 +8,7 @@ status line closes itself when the bar takes over or the crawl ends.
 
 import shutil
 import sys
+import threading
 from typing import TextIO
 
 from gmaps_review_filter.progress import ReviewProgress
@@ -15,6 +16,8 @@ from gmaps_review_filter.progress import ReviewProgress
 MIN_RULE = 10
 MAX_RULE = 60
 DEFAULT_COLUMNS = 80
+# Carriage return + erase-to-end-of-line: wipes a live bar frame.
+ERASE_LINE = "\r\033[K"
 
 
 class StatusLine:
@@ -48,27 +51,42 @@ class Terminal:
     def __init__(self, stream: TextIO | None = None):
         self.stream = sys.stderr if stream is None else stream
         self._status: StatusLine | None = None
+        # The queue reader reports accepted URLs from another thread while
+        # the scrape redraws the bar; one reentrant lock serializes both.
+        self._lock = threading.RLock()
+        self._bar_active = False
 
     def _write(self, text: str) -> None:
-        self.stream.write(text)
-        self.stream.flush()
+        with self._lock:
+            self.stream.write(text)
+            self.stream.flush()
 
     def write(self, text: str = "", *, end: str = "\n") -> None:
-        """Write a complete line, closing any open status line first."""
-        self.close_status()
-        self._write(text + end)
+        """Write a complete line, closing any open status line first.
+
+        A live bar frame ends without a newline, so it is erased before the
+        text starts; the next frame redraws from column zero.
+        """
+        with self._lock:
+            if self._bar_active:
+                self._write(ERASE_LINE)
+                self._bar_active = False
+            self.close_status()
+            self._write(text + end)
 
     def status(self, text: str) -> StatusLine:
         """Show a no-newline status line for the next step."""
-        self.close_status()
-        line = StatusLine(self)
-        line.show(text)
-        self._status = line
-        return line
+        with self._lock:
+            self.close_status()
+            line = StatusLine(self)
+            line.show(text)
+            self._status = line
+            return line
 
     def close_status(self) -> None:
-        if self._status is not None:
-            self._status.close()
+        with self._lock:
+            if self._status is not None:
+                self._status.close()
 
     def rule(self) -> str:
         """Dash rule between attempts/spots: readable, never wrapping."""
@@ -86,10 +104,21 @@ class Terminal:
         enabled: bool | None = None,
     ) -> ReviewProgress:
         """A bar bound to this terminal's stream and open status line."""
-        return ReviewProgress(
-            total,
-            stream=self.stream,
-            enabled=enabled,
-            label=label,
-            status=self._status,
-        )
+        with self._lock:
+            bar = ReviewProgress(
+                total,
+                stream=self.stream,
+                enabled=enabled,
+                label=label,
+                status=self._status,
+                lock=self._lock,
+                on_finish=self._bar_finished,
+            )
+            # Only a bar that will actually draw owns the terminal line;
+            # piped stderr must stay free of erase sequences.
+            self._bar_active = bar.enabled
+            return bar
+
+    def _bar_finished(self) -> None:
+        with self._lock:
+            self._bar_active = False

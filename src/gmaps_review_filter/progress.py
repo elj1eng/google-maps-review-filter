@@ -6,6 +6,8 @@ browser, and out of logging so a TTY bar never pollutes piped output.
 
 import shutil
 import sys
+from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from typing import Protocol, TextIO
 
 BAR_WIDTH = 30
@@ -44,12 +46,21 @@ class ReviewProgress:
         label: str = _LABEL,
         columns: int | None = None,
         status: StatusHandle | None = None,
+        lock: AbstractContextManager[object] | None = None,
+        on_finish: Callable[[], None] | None = None,
     ) -> None:
         self.total = max(total, 0)
         self.stream = sys.stderr if stream is None else stream
         self.width = width
         self.label = label
         self.status = status
+        # Shared with the Terminal when the queue reader writes from another
+        # thread; a private lock keeps standalone bars safe either way.
+        self._lock: AbstractContextManager[object] = (
+            nullcontext() if lock is None else lock
+        )
+        self.on_finish = on_finish
+        self._finished = False
         if columns is None:
             columns = shutil.get_terminal_size((DEFAULT_COLUMNS, 24)).columns
         self.columns = max(columns, 1)
@@ -77,21 +88,27 @@ class ReviewProgress:
 
     def update(self, loaded: int) -> None:
         """Draw the frame; repeated counts are a no-op."""
-        if not self.enabled or loaded == self._last:
-            return
-        if self._last is None and self.status is not None:
-            # The leading \r overwrites the status line: no newline.
-            self.status.supersede()
-        self._last = loaded
-        self.stream.write("\r" + self._frame(loaded))
-        self.stream.flush()
+        with self._lock:
+            if not self.enabled or loaded == self._last:
+                return
+            if self._last is None and self.status is not None:
+                # The leading \r overwrites the status line: no newline.
+                self.status.supersede()
+            self._last = loaded
+            self.stream.write("\r" + self._frame(loaded))
+            self.stream.flush()
 
     def finish(self) -> None:
         """Terminate the bar line so the next log message starts clean."""
-        if self.status is not None:
-            self.status.close()
-        if not self.enabled or self._last is None:
-            return
-        self._last = None
-        self.stream.write("\n")
-        self.stream.flush()
+        with self._lock:
+            if self.status is not None:
+                self.status.close()
+            if not self._finished:
+                self._finished = True
+                if self.on_finish is not None:
+                    self.on_finish()
+            if not self.enabled or self._last is None:
+                return
+            self._last = None
+            self.stream.write("\n")
+            self.stream.flush()
