@@ -4,7 +4,7 @@ import pytest
 
 import gmaps_review_filter.urls as urls_mod
 from gmaps_review_filter.errors import PermanentScrapeError
-from gmaps_review_filter.urls import is_google_host, validate_place_url
+from gmaps_review_filter.urls import is_google_host, place_label, validate_place_url
 
 PLACE_PATH = "/maps/place/Peter+Luger+Steak+House/@40.7,-73.9,17z"
 
@@ -61,6 +61,33 @@ def test_is_google_host_rejects_lookalikes():
     assert not is_google_host("google.co.uk")
     assert not is_google_host("notgoogle.com")
     assert not is_google_host("")
+
+
+def test_place_label_decodes_the_place_slug():
+    url = (
+        "https://www.google.com/maps/place/"
+        "Tr%C3%B2n+Kitchen/@10.7869621,106.6805991,17z/data=!3m1!4b1"
+    )
+    assert place_label(url) == "Tròn Kitchen"
+
+
+def test_place_label_falls_back_to_host_and_path_for_short_links():
+    assert place_label("https://maps.app.goo.gl/abc123") == "maps.app.goo.gl/abc123"
+
+
+def test_place_label_returns_unparseable_input():
+    assert place_label("not a url") == "not a url"
+    assert place_label("") == ""
+
+
+def test_place_label_survives_a_parse_error(monkeypatch):
+    def boom(url):
+        raise ValueError("bad brackets")
+
+    monkeypatch.setattr(urls_mod.urllib.parse, "urlparse", boom)
+    assert place_label("https://google.com/maps/place/X") == (
+        "https://google.com/maps/place/X"
+    )
 
 
 def test_malformed_url_is_permanent_and_names_the_parse_error(monkeypatch):

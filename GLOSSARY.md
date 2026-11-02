@@ -232,7 +232,16 @@ a crawl to finish.
 A URL accepted by the queue but not started yet. It is validated at enqueue
 time, so a non-place URL is rejected immediately instead of after a crawl.
 - **In code:** `spot_queue.EnqueueResult`, `QueueStatus.QUEUED`;
-  `SpotQueue.pending()`.
+  `SpotQueue.pending()`, `SpotQueue.pending_urls()`.
+
+### Queue label
+The name shown for a queued spot, decoded from the `/maps/place/<name>/` slug
+(no extra request). Short links have no name until Google resolves them, so
+they fall back to host + path.
+- **In code:** `urls.place_label`; used by `cli._queue_notice` and
+  `cli._QueueView`.
+- **Not:** `PlaceSummary.name`, which is the authoritative name parsed from
+  the scraped page header.
 
 ### Duplicate
 A URL already accepted this session (compared after validation and

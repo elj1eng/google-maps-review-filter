@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -21,11 +22,15 @@ from gmaps_review_filter.spot_queue import (
     SpotQueue,
 )
 from gmaps_review_filter.ui import Terminal
+from gmaps_review_filter.urls import place_label
 
 EXIT_OK = 0
 EXIT_SCRAPE_FAILED = 1
 EXIT_BAD_URL = 2
 EXIT_INTERRUPTED = 130
+
+IDLE_PROMPT = "Enter Google Maps URL (or 'q' to quit):"
+QUEUE_PROMPT = "queue - Enter Google Maps URL (or 'q' to quit):"
 
 logger = logging.getLogger(__name__)
 
@@ -174,18 +179,56 @@ def _stdin_is_tty() -> bool:
 def _queue_notice(result: EnqueueResult, terminal: Terminal) -> None:
     """One stderr line per input URL, safe to call from the reader thread."""
     if result.status is QueueStatus.QUEUED:
-        terminal.write(f"Queued: {result.url}")
+        terminal.write(f"Queued: {place_label(result.url)}")
     elif result.status is QueueStatus.DUPLICATE:
-        terminal.write(f"Already queued: {result.url}")
+        terminal.write(f"Already queued: {place_label(result.url)}")
     elif result.status is QueueStatus.REJECTED:
         terminal.write(f"Skipped ({result.reason}): {result.url}")
     # STOPPED: the run is shutting down; stay quiet.
 
 
-def _announce_waiting(queue: SpotQueue, terminal: Terminal) -> None:
-    """Tell the user the queue is idle and still accepting input."""
+def _show_idle_prompt(queue: SpotQueue, terminal: Terminal) -> None:
+    """Prompt for the next URL when nothing is running or pending."""
     if queue.pending() == 0 and not queue.closed:
-        terminal.write("Waiting for URLs (q to quit)...")
+        terminal.write(IDLE_PROMPT)
+
+
+class _QueueView:
+    """Numbered queue rendering shared by the main and reader threads.
+
+    ``0`` is the spot being scraped and ``1..`` the URLs still waiting, so a
+    URL accepted mid-scrape pushes itself onto the visible list.
+    """
+
+    def __init__(self, queue: SpotQueue, terminal: Terminal) -> None:
+        self._queue = queue
+        self._terminal = terminal
+        self._lock = threading.RLock()
+        self._current: str | None = None
+
+    def start(self, url: str) -> None:
+        """Mark ``url`` as the current spot and print the queue."""
+        with self._lock:
+            self._current = url
+            self._render(url)
+
+    def finish(self) -> None:
+        """Clear the current spot once its scrape returns."""
+        with self._lock:
+            self._current = None
+
+    def notice(self, result: EnqueueResult) -> None:
+        """Report one enqueue outcome; redraw the list when work is running."""
+        with self._lock:
+            _queue_notice(result, self._terminal)
+            if result.status is QueueStatus.QUEUED and self._current is not None:
+                self._render(self._current)
+
+    def _render(self, current: str) -> None:
+        rows = [f"0. {place_label(current)}"]
+        for index, url in enumerate(self._queue.pending_urls(), start=1):
+            rows.append(f"{index}. {place_label(url)}")
+        self._terminal.write("\n".join(rows))
 
 
 def run_once(
@@ -341,16 +384,15 @@ def run_queue(
     """
     term = terminal or Terminal()
     queue = spot_queue if spot_queue is not None else SpotQueue()
+    view = _QueueView(queue, term)
     follow_stdin = spot_queue is None
     if follow_stdin:
         queue.start_reader(
             sys.stdin if stdin is None else stdin,
-            on_result=lambda result: _queue_notice(result, term),
+            on_result=view.notice,
         )
-    term.write("Queue mode: paste more Google Maps URLs while a spot loads.")
-    term.write("'q' stops after the current spot; Ctrl-C exits now.")
     for raw in urls:
-        _queue_notice(queue.enqueue(raw), term)
+        view.notice(queue.enqueue(raw))
     if not follow_stdin:
         # No reader owns an injected queue, so nothing more can arrive.
         queue.close()
@@ -358,13 +400,14 @@ def run_queue(
     first = True
     try:
         while not queue.stopped:
-            _announce_waiting(queue, term)
+            _show_idle_prompt(queue, term)
             url = queue.next()
             if url is None:
                 break
             if not first and not as_json:
                 term.separator()
-            term.write(f"Spot: {url}")
+            view.start(url)
+            term.write(QUEUE_PROMPT)
             codes.append(
                 run_once(
                     url,
@@ -380,9 +423,8 @@ def run_queue(
                     auth_hint=first,
                 )
             )
+            view.finish()
             first = False
-            if not as_json and not queue.stopped:
-                term.write(f"Queue: {queue.pending()} spot(s) waiting.")
     except KeyboardInterrupt:
         term.write(f"Interrupted; {queue.pending()} queued spot(s) discarded.")
         return EXIT_INTERRUPTED

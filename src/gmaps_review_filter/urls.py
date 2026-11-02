@@ -22,6 +22,28 @@ def is_google_host(host: str) -> bool:
     )
 
 
+def place_label(url: str) -> str:
+    """Best human label for a place URL, without opening the page.
+
+    Place URLs carry the name in the ``/maps/place/<name>/`` slug, so it can
+    be decoded for queue display. Short links have no name until Google
+    resolves them, so they fall back to host + path.
+    """
+    cleaned = (url or "").strip()
+    try:
+        parsed = urllib.parse.urlparse(cleaned)
+    except ValueError:
+        return cleaned
+    marker = "/maps/place/"
+    if marker in parsed.path:
+        slug = parsed.path.split(marker, 1)[1].split("/", 1)[0]
+        name = urllib.parse.unquote_plus(slug).strip()
+        if name:
+            return name
+    fallback = f"{parsed.netloc}{parsed.path}".strip("/")
+    return fallback or cleaned
+
+
 def validate_place_url(url: str) -> str:
     """Reject non-place URLs before launching a browser.
 

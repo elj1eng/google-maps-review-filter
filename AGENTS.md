@@ -146,8 +146,11 @@ Pipeline: `cli.run_once` → `MapsScraper.fetch_html` (retry loop) →
   the queue case: it erases a live frame (`\r\033[K`) before the line, and only
   when the bar is enabled, so piped stderr never sees escape codes.
 - Typed characters can still visually collide with a redrawing bar until Enter
-  is pressed; the `Queued: <url>` confirmation is the source of truth. Do not
+  is pressed; the `Queued: <name>` confirmation is the source of truth. Do not
   add raw-mode/termios handling for this.
+- Queue labels come from the `/maps/place/<name>/` slug (`urls.place_label`),
+  not from a network lookup. Short links stay labelled by host + path until
+  scraped; do not add a redirect resolver just for display.
 - The version is duplicated in `src/gmaps_review_filter/__init__.py` and
   `pyproject.toml`; `test_cli.py` enforces they match.
 - `auth.json` is a credential: mode 600, gitignored, never commit it.

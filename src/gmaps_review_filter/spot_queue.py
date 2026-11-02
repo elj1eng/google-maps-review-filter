@@ -77,6 +77,11 @@ class SpotQueue:
         with self._cond:
             return len(self._items)
 
+    def pending_urls(self) -> list[str]:
+        """Snapshot of accepted URLs not handed out yet, oldest first."""
+        with self._cond:
+            return list(self._items)
+
     def enqueue(self, raw: str) -> EnqueueResult:
         """Validate, dedupe and append one URL. Never blocks on the reader."""
         url = (raw or "").strip()

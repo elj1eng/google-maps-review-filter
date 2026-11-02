@@ -108,19 +108,28 @@ queue mode. In queue mode the exit code is the worst result of the batch
 
 When stdin is a terminal, the CLI keeps accepting URLs **while a spot is
 loading**. Type or paste a Google Maps URL and press Enter: it is queued
-(`Queued: <url>` on stderr) and scraped as soon as the current spot finishes.
+(`Queued: <name>` on stderr) and scraped as soon as the current spot finishes.
 The queue is FIFO, and duplicates or non-place URLs are skipped immediately
 with the reason.
 
 ```text
-Spot: https://www.google.com/maps/place/...
-<report>
-Queue: 2 spot(s) waiting.
-------------------------------------------------------------
-Spot: https://www.google.com/maps/place/...
-<report>
+Enter Google Maps URL (or 'q' to quit):
+Queued: Tròn Kitchen
+0. Tròn Kitchen
+queue - Enter Google Maps URL (or 'q' to quit):
+Loading reviews [███░░░░░] 42/210 (20%)
+Queued: Bến Thành Market
+0. Tròn Kitchen
+1. Bến Thành Market
+queue - Enter Google Maps URL (or 'q' to quit):
+...
 Queue finished: 2 ok, 0 failed, 0 discarded.
 ```
+
+`0.` is the spot being scraped and `1..` are the URLs still waiting. Names are
+decoded from the `/maps/place/<name>/` slug, so queueing never needs an extra
+request; short links show their host and path until the spot finishes (the
+report then carries the real name).
 
 - `q` (or `quit`/`exit`) finishes the current spot, drops anything still
   pending, and exits.

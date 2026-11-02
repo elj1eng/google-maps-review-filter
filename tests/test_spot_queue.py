@@ -66,6 +66,17 @@ def test_next_returns_urls_in_fifo_order():
     assert queue.pending() == 0
 
 
+def test_pending_urls_is_a_fifo_snapshot():
+    queue = SpotQueue()
+    queue.enqueue(PLACE_A)
+    queue.enqueue(PLACE_B)
+    assert queue.pending_urls() == [PLACE_A, PLACE_B]
+    queue.next()
+    assert queue.pending_urls() == [PLACE_B]
+    queue.pending_urls().append("mutated")
+    assert queue.pending_urls() == [PLACE_B]
+
+
 def test_next_blocks_until_a_url_arrives():
     queue = SpotQueue()
     received = []

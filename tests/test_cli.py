@@ -588,11 +588,17 @@ def test_queue_ctrl_c_exits_130(monkeypatch, capsys):
     assert "1 queued spot(s) discarded" in err
 
 
-def test_queue_prints_a_header_and_rule_between_spots(monkeypatch, capsys):
+def test_queue_prints_numbered_spots_and_the_queue_prompt(monkeypatch, capsys):
     _queue_run(monkeypatch, [PLACE_A, PLACE_B], as_json=False)
     err = capsys.readouterr().err
-    assert f"Spot: {PLACE_A}" in err
-    assert f"Spot: {PLACE_B}" in err
+    assert "0. A" in err
+    assert "0. B" in err
+    assert "1. B" in err  # B waits while A is scraped
+    assert "Spot:" not in err
+    assert err.count(main.QUEUE_PROMPT) == 2
+    # Injected queues are complete, so no idle prompt is printed on its own.
+    assert main.IDLE_PROMPT not in err.splitlines()
+    assert "Queue mode: paste" not in err
     assert len(_rules(err)) == 1
     assert "Queue finished: 2 ok, 0 failed, 0 discarded." in err
 
@@ -628,37 +634,72 @@ def test_queue_prints_the_auth_hint_once(capsys, tmp_path):
     assert capsys.readouterr().err.count("no saved Google session") == 1
 
 
-def test_queue_notice_renders_each_status():
+def test_queue_notice_renders_each_status_with_place_names():
     stream = io.StringIO()
     terminal = Terminal(stream)
     main._queue_notice(EnqueueResult(QueueStatus.QUEUED, PLACE_A), terminal)
     main._queue_notice(EnqueueResult(QueueStatus.DUPLICATE, PLACE_A), terminal)
     main._queue_notice(EnqueueResult(QueueStatus.REJECTED, "x", "bad"), terminal)
     main._queue_notice(EnqueueResult(QueueStatus.STOPPED, "y"), terminal)
-    assert stream.getvalue() == (
-        f"Queued: {PLACE_A}\nAlready queued: {PLACE_A}\nSkipped (bad): x\n"
-    )
+    assert stream.getvalue() == "Queued: A\nAlready queued: A\nSkipped (bad): x\n"
 
 
-def test_announce_waiting_only_when_the_queue_is_idle_and_open():
+def test_queue_notice_decodes_the_place_slug():
+    url = "https://www.google.com/maps/place/Tr%C3%B2n+Kitchen/@10.7,106.6,17z"
+    stream = io.StringIO()
+    main._queue_notice(EnqueueResult(QueueStatus.QUEUED, url), Terminal(stream))
+    assert stream.getvalue() == "Queued: Tròn Kitchen\n"
+
+
+def test_queue_view_numbers_current_and_pending_spots():
+    queue = SpotQueue()
+    queue.enqueue(PLACE_B)
+    stream = io.StringIO()
+    view = main._QueueView(queue, Terminal(stream))
+    view.start(PLACE_A)
+    assert stream.getvalue() == "0. A\n1. B\n"
+
+    view.notice(queue.enqueue("https://www.google.com/maps/place/C"))
+    assert stream.getvalue().endswith("Queued: C\n0. A\n1. B\n2. C\n")
+
+
+def test_queue_view_reports_queued_spots_while_idle():
+    queue = SpotQueue()
+    stream = io.StringIO()
+    view = main._QueueView(queue, Terminal(stream))
+    view.notice(queue.enqueue(PLACE_A))
+    assert stream.getvalue() == "Queued: A\n"
+
+
+def test_queue_view_stops_listing_after_finish():
+    queue = SpotQueue()
+    stream = io.StringIO()
+    view = main._QueueView(queue, Terminal(stream))
+    view.start(PLACE_A)
+    view.finish()
+    view.notice(queue.enqueue(PLACE_B))
+    assert stream.getvalue().endswith("Queued: B\n")
+    assert "1. B" not in stream.getvalue()
+
+
+def test_show_idle_prompt_only_when_the_queue_is_idle_and_open():
     stream = io.StringIO()
     terminal = Terminal(stream)
-    idle = SpotQueue()
-    main._announce_waiting(idle, terminal)
-    assert "Waiting for URLs" in stream.getvalue()
+    main._show_idle_prompt(SpotQueue(), terminal)
+    assert stream.getvalue() == main.IDLE_PROMPT + "\n"
 
     stream = io.StringIO()
     terminal = Terminal(stream)
     pending = SpotQueue()
     pending.enqueue(PLACE_A)
-    main._announce_waiting(pending, terminal)
+    main._show_idle_prompt(pending, terminal)
     assert stream.getvalue() == ""
 
     stream = io.StringIO()
     terminal = Terminal(stream)
     closed = SpotQueue()
     closed.close()
-    main._announce_waiting(closed, terminal)
+    main._show_idle_prompt(closed, terminal)
     assert stream.getvalue() == ""
 
 
