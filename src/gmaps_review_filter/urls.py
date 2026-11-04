@@ -1,5 +1,7 @@
 """Place-URL validation, before any browser work."""
 
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -14,9 +16,22 @@ GOOGLE_DOMAINS = ("google.com", "google.com.vn")
 # Short links that redirect to a place page.
 SHORT_HOSTS = ("maps.app.goo.gl", "goo.gl")
 
-# One redirect hop for display labels; short enough to never stall queueing.
+# One redirect chain for display labels; short enough to never stall queueing.
 SHORT_LINK_TIMEOUT_S = 5.0
-USER_AGENT = "Mozilla/5.0 (compatible; gmaps-review-filter)"
+# Short-link resolution is best effort: a throttled or flaky hop must not
+# leave a URL in the queue, so transient failures get a couple more tries.
+SHORT_LINK_ATTEMPTS = 3
+SHORT_LINK_BACKOFF_S = 0.4
+# A plain browser UA; Google serves share links more reliably to these than
+# to obviously non-browser clients.
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+class _TransientLookupError(Exception):
+    """A short-link hop failed in a way worth retrying (timeout, 429, 5xx)."""
 
 
 def is_google_host(host: str) -> bool:
@@ -49,32 +64,61 @@ def place_label(url: str) -> str:
     return fallback or cleaned
 
 
-def resolve_short_link(
-    url: str, *, timeout: float = SHORT_LINK_TIMEOUT_S
-) -> str | None:
-    """Follow a Maps short link to the place URL it points at, if possible.
-
-    Only the short-host allowlist is resolved, and the final URL must be a
-    Google place page. Any failure (offline, consent wall, timeout) returns
-    ``None`` so queueing falls back to the short link's host + path instead
-    of blocking on the network.
-    """
+def is_short_link(url: str) -> bool:
+    """True for an ``http(s)`` link on the Maps short-host allowlist."""
     cleaned = (url or "").strip()
     try:
         parsed = urllib.parse.urlparse(cleaned)
         host = (parsed.hostname or "").lower().rstrip(".")
     except ValueError:
+        return False
+    return parsed.scheme in ("http", "https") and host in SHORT_HOSTS
+
+
+def resolve_short_link(
+    url: str,
+    *,
+    timeout: float = SHORT_LINK_TIMEOUT_S,
+    attempts: int = SHORT_LINK_ATTEMPTS,
+) -> str | None:
+    """Follow a Maps short link to the place URL it points at, if possible.
+
+    Only the short-host allowlist is resolved, and the final URL must be a
+    Google place page. Transient failures (timeout, throttling, 5xx) are
+    retried a couple of times so a busy network does not strand a URL in
+    the queue. Any remaining failure returns ``None`` so queueing falls
+    back to the short link's host + path instead of blocking further.
+    """
+    if not is_short_link(url):
         return None
-    if parsed.scheme not in ("http", "https") or host not in SHORT_HOSTS:
-        return None
+    cleaned = url.strip()
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return _resolve_once(cleaned, timeout)
+        except _TransientLookupError:
+            if attempt >= max(attempts, 1):
+                return None
+            time.sleep(SHORT_LINK_BACKOFF_S * attempt)
+
+
+def _resolve_once(url: str, timeout: float) -> str | None:
+    """One redirect chain; raises only when retrying could help."""
     request = urllib.request.Request(  # noqa: S310 - http(s) + allowlist above
-        cleaned, headers={"User-Agent": USER_AGENT}
+        url, headers={"User-Agent": USER_AGENT, "Accept": "text/html"}
     )
     try:
-        # The URL is restricted to the short-link allowlist above; only the
-        # redirect target is read, never the response body.
+        # Only the short-link allowlist is opened above; only the redirect
+        # target is read, never the response body.
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
             final = str(response.geturl())
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429 or 500 <= exc.code < 600:
+            raise _TransientLookupError(str(exc)) from exc
+        return None
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise _TransientLookupError(str(exc)) from exc
     except Exception:
         return None
     try:

@@ -152,13 +152,21 @@ Pipeline: `cli.run_once` → `MapsScraper.fetch_html` (retry loop) →
   it the next bar frame would land on the prompt row. `finish()` erases the
   footer row so the report starts clean.
 - Typed characters can still visually collide with a redrawing bar until Enter
-  is pressed; the `Queued: <name>` confirmation is the source of truth. Do not
+  is pressed; the confirmation line (`Queued: <name>` when idle, or the
+  appended `N. <name>` row while a spot runs) is the source of truth. Do not
   add raw-mode/termios handling for this.
 - Queue labels come from the `/maps/place/<name>/` slug (`urls.place_label`).
-  Short links are resolved once at enqueue time (`urls.resolve_short_link`,
-  bounded redirect chain with a 5 s timeout, no page body) so the real name
-  shows immediately; on any failure they fall back to host + path. Never
-  scrape or launch a browser from the reader thread for a label.
+  Short links are resolved at enqueue time (`urls.resolve_short_link`, bounded
+  redirect chain with a 5 s per-try timeout, transient failures retried, no
+  page body) so the real name shows immediately; on any failure they fall
+  back to host + path, and `_QueueView.start` retries unresolved labels before
+  listing the queue. Never scrape or launch a browser from the reader thread
+  for a label.
+- Queue rows are append-only: `_QueueView.notice` writes the plain
+  confirmation when nothing runs, and one numbered row for the new spot while
+  a spot runs — never a reprint of the whole list (that is `_QueueView.start`,
+  once per spot). A URL the main thread already popped has no pending
+  position, so it falls back to the confirmation instead of a wrong number.
 - The version is duplicated in `src/gmaps_review_filter/__init__.py` and
   `pyproject.toml`; `test_cli.py` enforces they match.
 - `auth.json` is a credential: mode 600, gitignored, never commit it.

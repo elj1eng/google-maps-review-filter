@@ -744,7 +744,34 @@ def test_queue_view_numbers_current_and_pending_spots():
     assert stream.getvalue() == "0. A\n1. B\n"
 
     view.notice(queue.enqueue("https://www.google.com/maps/place/C"))
-    assert stream.getvalue().endswith("Queued: C\n0. A\n1. B\n2. C\n")
+    assert stream.getvalue().endswith("2. C\n")
+
+
+def test_queue_view_appends_one_row_per_spot_instead_of_redrawing():
+    queue = SpotQueue()
+    stream = io.StringIO()
+    view = main._QueueView(queue, Terminal(stream))
+    view.start(PLACE_A)
+    before = stream.getvalue()
+    for name in ("B", "C", "D"):
+        view.notice(queue.enqueue(f"https://www.google.com/maps/place/{name}"))
+    text = stream.getvalue()
+    # Earlier rows are untouched; each new spot contributes one line.
+    assert text.startswith(before)
+    assert text[len(before) :] == "1. B\n2. C\n3. D\n"
+
+
+def test_queue_view_skips_the_row_when_the_spot_already_started():
+    queue = SpotQueue(resolve=lambda url: None)
+    stream = io.StringIO()
+    view = main._QueueView(queue, Terminal(stream))
+    view.start(PLACE_A)
+    result = queue.enqueue(PLACE_B)
+    # The main thread can pop the URL before the reader renders the notice.
+    assert queue.next() == PLACE_B
+    view.notice(result)
+    assert stream.getvalue().endswith("Queued: B\n")
+    assert "1. B" not in stream.getvalue()
 
 
 def test_queue_view_uses_the_resolved_short_link_label():
@@ -758,6 +785,25 @@ def test_queue_view_uses_the_resolved_short_link_label():
     assert "Queued: A\n" in text
     assert "0. A\n" in text
     assert "maps.app.goo.gl" not in text
+
+
+def test_queue_view_retries_an_unresolved_short_link_before_listing():
+    short = "https://maps.app.goo.gl/abc123"
+    answers = [None, PLACE_A]
+
+    def resolve(url):
+        return answers.pop(0) if answers else None
+
+    queue = SpotQueue(resolve=resolve)
+    stream = io.StringIO()
+    view = main._QueueView(queue, Terminal(stream))
+    view.notice(queue.enqueue(short))
+    view.start(short)
+    text = stream.getvalue()
+    # The confirmation kept the fallback, but the list and current spot
+    # carry the name once the retry succeeds.
+    assert "Queued: maps.app.goo.gl/abc123\n" in text
+    assert "0. A\n" in text
 
 
 def test_queue_view_reports_queued_spots_while_idle():

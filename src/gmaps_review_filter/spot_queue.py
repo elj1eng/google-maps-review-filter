@@ -11,13 +11,19 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import partial
 from typing import TextIO
 
 from gmaps_review_filter.errors import PermanentScrapeError
-from gmaps_review_filter.urls import place_label, resolve_short_link, validate_place_url
+from gmaps_review_filter.urls import (
+    is_short_link,
+    place_label,
+    resolve_short_link,
+    validate_place_url,
+)
 
 # Lines that ask the reader to stop instead of adding a spot.
 STOP_WORDS = frozenset({"q", "quit", "exit"})
@@ -56,9 +62,17 @@ class SpotQueue:
         self._items: deque[str] = deque()
         self._seen: set[str] = set()
         self._labels: dict[str, str] = {}
+        # Short links that already got their one extra lookup at spot start;
+        # a dead link must not cost a timeout before every later spot.
+        self._retried: set[str] = set()
         # Short links carry no name; one redirect resolves the real place
         # slug for display. Injectable so tests never touch the network.
         self._resolve = resolve_short_link if resolve is None else resolve
+        # The between-spot retry is a single quick attempt: a dead link must
+        # not stall the next spot for the full multi-try budget.
+        self._retry_resolve = (
+            partial(resolve_short_link, attempts=1) if resolve is None else resolve
+        )
         self._cond = threading.Condition()
         self._closed = False
         self._stopped = False
@@ -92,6 +106,39 @@ class SpotQueue:
             label = self._labels.get(url)
         return place_label(url) if label is None else label
 
+    def refresh_labels(self, urls: Sequence[str]) -> None:
+        """Retry display names for short links that are still unresolved.
+
+        Called on the main thread between spots: a link whose enqueue-time
+        lookup failed (throttled, flaky network) gets another chance before
+        the queue is redrawn, so the list stops showing a raw URL. Regular
+        place URLs already carry their name in the slug and are skipped.
+        """
+        for url in urls:
+            with self._cond:
+                if self._stopped:
+                    return
+                if (
+                    url in self._labels
+                    or url in self._retried
+                    or not is_short_link(url)
+                ):
+                    continue
+                self._retried.add(url)
+            final = self._retry_resolve(url)
+            if final is None:
+                continue
+            with self._cond:
+                self._labels[url] = place_label(final)
+
+    def position(self, url: str) -> int | None:
+        """1-based place in the pending list, or None once it was handed out."""
+        with self._cond:
+            try:
+                return self._items.index(url) + 1
+            except ValueError:
+                return None
+
     def enqueue(self, raw: str) -> EnqueueResult:
         """Validate, dedupe and append one URL. Never blocks on the reader."""
         url = (raw or "").strip()
@@ -109,16 +156,17 @@ class SpotQueue:
                 return EnqueueResult(QueueStatus.STOPPED, url)
             if url in self._seen:
                 return EnqueueResult(QueueStatus.DUPLICATE, url)
-        # Resolving follows one redirect, so keep it out of the lock: the
+        # Resolving follows a redirect chain, so keep it out of the lock: the
         # main thread must still be able to drain and redraw meanwhile.
-        label = place_label(self._resolve(url) or url)
+        final = self._resolve(url) if is_short_link(url) else None
         with self._cond:
             if self._stopped:
                 return EnqueueResult(QueueStatus.STOPPED, url)
             if url in self._seen:
                 return EnqueueResult(QueueStatus.DUPLICATE, url)
             self._seen.add(url)
-            self._labels[url] = label
+            if final is not None:
+                self._labels[url] = place_label(final)
             self._items.append(url)
             self._cond.notify()
         return EnqueueResult(QueueStatus.QUEUED, url)

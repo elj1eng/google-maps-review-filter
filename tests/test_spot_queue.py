@@ -86,6 +86,78 @@ def test_unknown_url_label_decodes_the_slug():
     assert queue.label(PLACE_B) == "B"
 
 
+def test_position_counts_pending_urls_from_one():
+    queue = SpotQueue(resolve=lambda url: None)
+    queue.enqueue(PLACE_A)
+    queue.enqueue(PLACE_B)
+    assert queue.position(PLACE_A) == 1
+    assert queue.position(PLACE_B) == 2
+    assert queue.next() == PLACE_A
+    assert queue.position(PLACE_A) is None
+    assert queue.position("https://www.google.com/maps/place/Z") is None
+
+
+def test_refresh_labels_retries_an_unresolved_short_link():
+    answers = [None, PLACE_A]
+    queue = SpotQueue(resolve=lambda url: answers.pop(0) if answers else None)
+    queue.enqueue(SHORT)
+    assert queue.label(SHORT) == "maps.app.goo.gl/abc123"
+    queue.refresh_labels([SHORT])
+    assert queue.label(SHORT) == "A"
+
+
+def test_refresh_labels_skips_resolved_and_regular_urls():
+    calls = []
+
+    def resolve(url):
+        calls.append(url)
+        return PLACE_A
+
+    queue = SpotQueue(resolve=resolve)
+    queue.enqueue(SHORT)
+    queue.enqueue(PLACE_B)
+    # Regular place URLs never need a lookup; their slug is the label.
+    assert calls == [SHORT]
+    queue.refresh_labels([SHORT, PLACE_B])
+    assert calls == [SHORT]
+    assert queue.label(PLACE_B) == "B"
+
+
+def test_refresh_labels_does_nothing_once_stopped():
+    calls = []
+
+    def resolve(url):
+        calls.append(url)
+        return None
+
+    queue = SpotQueue(resolve=resolve)
+    queue.enqueue(SHORT)
+    queue.request_stop()
+    queue.refresh_labels([SHORT])
+    assert calls == [SHORT]
+
+
+def test_refresh_labels_keeps_the_fallback_when_the_retry_fails():
+    queue = SpotQueue(resolve=lambda url: None)
+    queue.enqueue(SHORT)
+    queue.refresh_labels([SHORT])
+    assert queue.label(SHORT) == "maps.app.goo.gl/abc123"
+
+
+def test_refresh_labels_retries_each_short_link_only_once():
+    calls = []
+
+    def resolve(url):
+        calls.append(url)
+        return None
+
+    queue = SpotQueue(resolve=resolve)
+    queue.enqueue(SHORT)
+    queue.refresh_labels([SHORT])
+    queue.refresh_labels([SHORT])
+    assert calls == [SHORT, SHORT]
+
+
 def test_enqueue_rejects_a_non_google_url():
     result = SpotQueue().enqueue("https://example.com/maps/place/A")
     assert result.status is QueueStatus.REJECTED

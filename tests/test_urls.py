@@ -1,17 +1,26 @@
 """Tests for the place-URL gate: exact Google host allowlist + path shape."""
 
+import urllib.error
+
 import pytest
 
 import gmaps_review_filter.urls as urls_mod
 from gmaps_review_filter.errors import PermanentScrapeError
 from gmaps_review_filter.urls import (
     is_google_host,
+    is_short_link,
     place_label,
     resolve_short_link,
     validate_place_url,
 )
 
 PLACE_PATH = "/maps/place/Peter+Luger+Steak+House/@40.7,-73.9,17z"
+
+
+@pytest.fixture(autouse=True)
+def _instant_retries(monkeypatch):
+    """Never sleep between short-link retries in tests."""
+    monkeypatch.setattr(urls_mod.time, "sleep", lambda seconds: None)
 
 
 @pytest.mark.parametrize(
@@ -173,6 +182,113 @@ def test_resolve_short_link_survives_a_parse_error(monkeypatch):
 def test_resolve_short_link_ignores_an_unparseable_redirect(monkeypatch):
     _fake_urlopen(monkeypatch, "http://[::1")
     assert resolve_short_link(SHORT_URL) is None
+
+
+def test_resolve_short_link_retries_a_transient_failure(monkeypatch):
+    calls = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def geturl(self):
+            return PLACE_URL
+
+    def opener(request, timeout):
+        calls.append(request.full_url)
+        if len(calls) < 3:
+            raise urllib.error.URLError("throttled")
+        return Response()
+
+    monkeypatch.setattr(urls_mod.urllib.request, "urlopen", opener)
+    assert resolve_short_link(SHORT_URL) == PLACE_URL
+    assert len(calls) == 3
+
+
+def test_resolve_short_link_gives_up_after_the_attempt_limit(monkeypatch):
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(request.full_url)
+        raise TimeoutError("slow")
+
+    monkeypatch.setattr(urls_mod.urllib.request, "urlopen", opener)
+    assert resolve_short_link(SHORT_URL, attempts=2) is None
+    assert len(calls) == 2
+
+
+def test_resolve_short_link_does_not_retry_a_permanent_http_error(monkeypatch):
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(request.full_url)
+        raise urllib.error.HTTPError(request.full_url, 404, "gone", {}, None)
+
+    monkeypatch.setattr(urls_mod.urllib.request, "urlopen", opener)
+    assert resolve_short_link(SHORT_URL) is None
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("code", [429, 503])
+def test_resolve_short_link_retries_throttling_and_server_errors(monkeypatch, code):
+    calls = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def geturl(self):
+            return PLACE_URL
+
+    def opener(request, timeout):
+        calls.append(request.full_url)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(request.full_url, code, "busy", {}, None)
+        return Response()
+
+    monkeypatch.setattr(urls_mod.urllib.request, "urlopen", opener)
+    assert resolve_short_link(SHORT_URL) == PLACE_URL
+    assert len(calls) == 2
+
+
+def test_resolve_short_link_ignores_an_unexpected_opener_error(monkeypatch):
+    def boom(request, timeout):
+        raise RuntimeError("weird client state")
+
+    monkeypatch.setattr(urls_mod.urllib.request, "urlopen", boom)
+    assert resolve_short_link(SHORT_URL) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://maps.app.goo.gl/abc123",
+        "http://goo.gl/maps/abc123",
+        "https://MAPS.APP.GOO.GL/abc123",
+    ],
+)
+def test_is_short_link_accepts_allowlisted_hosts(url):
+    assert is_short_link(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        PLACE_URL,
+        "https://maps.app.goo.gl.evil.com/abc123",
+        "ftp://maps.app.goo.gl/abc123",
+        "",
+        "not a url",
+    ],
+)
+def test_is_short_link_rejects_everything_else(url):
+    assert is_short_link(url) is False
 
 
 def test_malformed_url_is_permanent_and_names_the_parse_error(monkeypatch):

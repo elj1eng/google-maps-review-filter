@@ -223,6 +223,10 @@ class _QueueView:
         """Mark ``url`` as the current spot and print the queue."""
         with self._lock:
             self._current = url
+            # A short link whose enqueue-time lookup failed gets one more
+            # chance here (network is free before the browser launches), so
+            # the list does not keep showing a raw URL.
+            self._queue.refresh_labels([url, *self._queue.pending_urls()])
             self._terminal.write("\n".join(self._rows(url)))
 
     def finish(self) -> None:
@@ -231,20 +235,27 @@ class _QueueView:
             self._current = None
 
     def notice(self, result: EnqueueResult) -> None:
-        """Report one enqueue outcome; redraw the list when work is running.
+        """Report one enqueue outcome and append only its queue row.
 
-        The outcome line and the refreshed list go out as one write so a
-        live bar inserts them as one block, not two overlapping notices.
+        Reprinting the whole list per URL made a busy queue jump on every
+        paste; the numbered rows already on screen stay put and the new spot
+        is added as one line. A URL that the main thread already popped while
+        this was rendering has no pending position, so it falls back to the
+        plain confirmation and ``start`` prints it as the ``0.`` row.
         """
         with self._lock:
-            lines: list[str] = []
-            text = _notice_text(result, self._queue.label(result.url))
-            if text is not None:
-                lines.append(text)
+            label = self._queue.label(result.url)
+            row: str | None = None
             if result.status is QueueStatus.QUEUED and self._current is not None:
-                lines.extend(self._rows(self._current))
-            if lines:
-                self._terminal.write("\n".join(lines))
+                position = self._queue.position(result.url)
+                if position is not None:
+                    row = f"{position}. {label}"
+            if row is not None:
+                self._terminal.write(row)
+                return
+            text = _notice_text(result, label)
+            if text is not None:
+                self._terminal.write(text)
 
     def _rows(self, current: str) -> list[str]:
         rows = [f"0. {self._queue.label(current)}"]

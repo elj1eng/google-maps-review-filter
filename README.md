@@ -133,12 +133,15 @@ keeps updating in place instead of being redrawn for every confirmation.
 Before the first frame (the slow part of startup) the same prompt is shown as
 the status line, so typing never lands on a blank screen.
 
-`0.` is the spot being scraped and `1..` are the URLs still waiting. Names are
-decoded from the `/maps/place/<name>/` slug. Short links (`maps.app.goo.gl`)
-are resolved once when queued — a bounded redirect chain with a 5 s timeout,
-no page body — so the real name appears immediately; if the lookup fails
-(offline, consent wall), the label falls back to host + path and the report
-still carries the real name once the spot is scraped.
+`0.` is the spot being scraped and `1..` are the URLs still waiting. Adding a
+spot appends one numbered row instead of reprinting the whole list, so a busy
+paste does not shuffle the queue on screen. Names are decoded from the
+`/maps/place/<name>/` slug. Short links (`maps.app.goo.gl`) are resolved when
+queued — a bounded redirect chain (5 s per try, transient failures retried),
+no page body — so the real name appears immediately; if the lookup still
+fails (offline, consent wall), the label falls back to host + path and is
+retried before the next spot starts. The report always carries the real name
+once the spot is scraped.
 
 - `q` (or `quit`/`exit`) finishes the current spot, drops anything still
   pending, and exits.

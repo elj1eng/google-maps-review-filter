@@ -16,7 +16,8 @@ used interchangeably in logs and tests.
 Validation before any browser launches. Accepts `/maps/place/` paths on Google
 hosts and Maps short links; everything else raises `PermanentScrapeError`.
 - **In code:** `urls.validate_place_url`, `GOOGLE_DOMAINS`, `SHORT_HOSTS`.
-- **Not:** a redirect resolver — short links are passed through untouched.
+- **Not:** a resolver — validation passes short links through untouched
+  (display-only resolution is `urls.resolve_short_link`).
 
 ### Review card
 One rendered review in the feed (`div.jftiEf`), holding a star rating and the
@@ -245,11 +246,12 @@ time, so a non-place URL is rejected immediately instead of after a crawl.
 
 ### Queue label
 The name shown for a queued spot, decoded from the `/maps/place/<name>/` slug.
-Short links carry no name, so they are resolved once when queued (a bounded
-redirect chain, no page body) and the final place slug becomes the label. If
-that fails, the label falls back to host + path.
+Short links carry no name, so they are resolved when queued (a bounded
+redirect chain, no page body, transient failures retried) and the final place
+slug becomes the label. If that still fails, the label falls back to host +
+path and is retried before the spot starts.
 - **In code:** `urls.place_label`, `urls.resolve_short_link`;
-  `SpotQueue.label`; used by `cli._QueueView`.
+  `SpotQueue.label`, `SpotQueue.refresh_labels`; used by `cli._QueueView`.
 - **Not:** `PlaceSummary.name`, which is the authoritative name parsed from
   the scraped page header.
 
