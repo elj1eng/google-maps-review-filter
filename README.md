@@ -129,9 +129,11 @@ Queue finished: 2 ok, 0 failed, 0 discarded.
 
 While a spot loads, the bar stays on one row and the `queue - ...` prompt sits
 directly **below** it. Queued URLs are inserted between the two, so the bar
-keeps updating in place instead of being redrawn for every confirmation.
-Before the first frame (the slow part of startup) the same prompt is shown as
-the status line, so typing never lands on a blank screen.
+keeps updating in place instead of being redrawn for every confirmation. The
+queue list is held until the bar's first frame and then printed under it, so
+the list never starts above the bar during startup. Before the first frame the
+same prompt is shown as the status line, so typing never lands on a blank
+screen.
 
 `0.` is the spot being scraped and `1..` are the URLs still waiting. Adding a
 spot appends one numbered row instead of reprinting the whole list, so a busy

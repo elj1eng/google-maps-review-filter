@@ -603,6 +603,35 @@ def test_queue_prints_numbered_spots_and_the_queue_prompt(monkeypatch, capsys):
     assert "Queue finished: 2 ok, 0 failed, 0 discarded." in err
 
 
+def test_run_queue_lists_the_spot_after_the_bar_starts(monkeypatch):
+    class _TtyStream(io.StringIO):
+        def isatty(self):
+            return True
+
+    stream = _TtyStream()
+    term = Terminal(stream)
+    queue = SpotQueue(resolve=lambda url: None)
+
+    def fake_run_once(url, **opts):
+        bar = opts["terminal"].progress(10, label="Attempt 1/5", enabled=True)
+        bar.update(5)
+        bar.finish()
+        return 0
+
+    monkeypatch.setattr(main, "run_once", fake_run_once)
+    result = main.run_queue(
+        [PLACE_A],
+        target=10,
+        trust_threshold=10,
+        as_json=True,
+        terminal=term,
+        spot_queue=queue,
+    )
+    assert result == 0
+    text = stream.getvalue()
+    assert text.index("Attempt 1/5") < text.index("0. A")
+
+
 def test_queue_json_is_one_object_per_line(capsys):
     result = main.run_queue(
         [PLACE_A, PLACE_B],
@@ -772,6 +801,58 @@ def test_queue_view_skips_the_row_when_the_spot_already_started():
     view.notice(result)
     assert stream.getvalue().endswith("Queued: B\n")
     assert "1. B" not in stream.getvalue()
+
+
+def test_queue_snapshot_waits_for_the_bar_and_lands_below_it():
+    queue = SpotQueue(resolve=lambda url: None)
+    queue.enqueue(PLACE_B)
+    stream = io.StringIO()
+    term = Terminal(stream)
+    term.footer = main.QUEUE_PROMPT
+    view = main._QueueView(queue, term)
+    view.start(PLACE_A)
+    # Nothing above the bar: the list is held until the first frame.
+    assert stream.getvalue() == ""
+    bar = term.progress(10, label="Attempt 1/5", enabled=True)
+    bar.update(4)
+    text = stream.getvalue()
+    assert text.index("Attempt 1/5") < text.index("0. A")
+    assert text.index("0. A") < text.index("1. B")
+    assert text.endswith("1. B\n" + main.QUEUE_PROMPT)
+
+
+def test_queue_added_before_the_bar_is_listed_below_it():
+    queue = SpotQueue(resolve=lambda url: None)
+    stream = io.StringIO()
+    term = Terminal(stream)
+    term.footer = main.QUEUE_PROMPT
+    view = main._QueueView(queue, term)
+    view.start(PLACE_A)
+    view.notice(queue.enqueue(PLACE_B))
+    # Only the confirmation appears pre-bar; the snapshot will list the row.
+    assert stream.getvalue() == "Queued: B\n"
+    bar = term.progress(10, label="Attempt 1/5", enabled=True)
+    bar.update(4)
+    text = stream.getvalue()
+    assert text.index("Attempt 1/5") < text.index("0. A")
+    assert text.index("0. A") < text.index("1. B")
+
+
+def test_queue_added_after_the_bar_lands_below_it():
+    queue = SpotQueue(resolve=lambda url: None)
+    stream = io.StringIO()
+    term = Terminal(stream)
+    term.footer = main.QUEUE_PROMPT
+    view = main._QueueView(queue, term)
+    view.start(PLACE_A)
+    bar = term.progress(10, label="Attempt 1/5", enabled=True)
+    bar.update(4)
+    before = stream.getvalue()
+    view.notice(queue.enqueue(PLACE_B))
+    text = stream.getvalue()
+    assert text.startswith(before)
+    assert text.endswith("1. B\n" + main.QUEUE_PROMPT)
+    assert "\033[s" not in text[len(before) :]
 
 
 def test_queue_view_uses_the_resolved_short_link_label():

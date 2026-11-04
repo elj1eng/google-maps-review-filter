@@ -218,9 +218,12 @@ width-fitted so it never wraps, TTY-only, and disabled by `--verbose`.
 ### Footer
 The `queue - Enter Google Maps URL...` prompt printed on the row **below** the
 bar while a spot loads. Later frames redraw only the bar above it; notices are
-inserted between them, so the prompt and anything being typed survive.
+inserted between them, so the prompt and anything being typed survive. Rows
+that arrive before the first frame are deferred (`Terminal.defer`) and inserted
+between the fresh bar and the prompt, so the queue never appears above the bar.
 - **In code:** `ReviewProgress(footer=...)`, `ReviewProgress.notify`,
-  `Terminal.footer` (set by `cli.run_queue`).
+  `ReviewProgress.on_first_frame`, `Terminal.footer`/`Terminal.defer`
+  (set by `cli.run_queue`).
 - **Not:** the idle prompt, which is a normal line printed when nothing runs.
 
 ### Dash rule

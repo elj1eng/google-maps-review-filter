@@ -9,6 +9,7 @@ status line closes itself when the bar takes over or the crawl ends.
 import shutil
 import sys
 import threading
+from collections.abc import Callable
 from typing import TextIO
 
 from gmaps_review_filter.progress import ReviewProgress
@@ -59,6 +60,9 @@ class Terminal:
         # Set by the CLI around a scrape; None keeps the old single line.
         self.footer: str | None = None
         self._bar: ReviewProgress | None = None
+        # Queue rows that belong below the bar but arrived before it drew.
+        # Renderers (not text) so the list reflects URLs queued meanwhile.
+        self._deferred: list[Callable[[], str]] = []
 
     def _write(self, text: str) -> None:
         with self._lock:
@@ -90,6 +94,34 @@ class Terminal:
             bar = self._bar
             if bar is not None and bar.footer_live:
                 bar.reanchor()
+
+    @property
+    def bar_live(self) -> bool:
+        """True once the bar has drawn its footer, so rows can go beneath it."""
+        with self._lock:
+            bar = self._bar
+            return bool(bar is not None and bar.enabled and bar.footer_live)
+
+    def defer(self, render: Callable[[], str]) -> None:
+        """Hold one queue block until it can be placed below the bar.
+
+        Before the first frame the bar does not exist yet, so writing now
+        would leave the list above it. A renderer keeps the eventual text
+        current (URLs can still arrive before the bar appears).
+        """
+        with self._lock:
+            bar = self._bar
+            if bar is None or not bar.enabled or not bar.footer_live:
+                self._deferred.append(render)
+                return
+        self.write(render())
+
+    def flush_deferred(self) -> None:
+        """Write held queue blocks now (bar-start callback or spot teardown)."""
+        with self._lock:
+            deferred, self._deferred = self._deferred, []
+        for render in deferred:
+            self.write(render())
 
     def status(self, text: str) -> StatusLine:
         """Show a no-newline status line for the next step."""
@@ -131,6 +163,7 @@ class Terminal:
                 lock=self._lock,
                 on_finish=self._bar_finished,
                 footer=self.footer,
+                on_first_frame=self.flush_deferred,
             )
             # Only a bar that will actually draw owns the terminal line;
             # piped stderr must stay free of erase sequences.

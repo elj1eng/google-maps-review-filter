@@ -198,6 +198,25 @@ def test_notify_without_a_live_bar_is_a_plain_line():
     assert stream.text == "Queued: X\n"
 
 
+def test_on_first_frame_fires_once_right_after_the_footer_frame():
+    stream = _TtyStream()
+    calls = []
+    progress = ReviewProgress(
+        210,
+        stream=stream,
+        width=20,
+        enabled=True,
+        columns=200,
+        footer=FOOTER,
+        on_first_frame=lambda: calls.append(stream.text),
+    )
+    progress.update(10)
+    progress.update(20)
+    assert len(calls) == 1
+    assert calls[0].endswith(FOOTER)
+    assert progress.footer_live is True
+
+
 def test_finish_erases_the_footer_without_an_extra_newline():
     progress, stream = _footer_bar()
     progress.update(10)

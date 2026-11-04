@@ -147,6 +147,11 @@ Pipeline: `cli.run_once` → `MapsScraper.fetch_html` (retry loop) →
   rows: the bar and the queue prompt below it. `Terminal.write` inserts notices
   between them via cursor save/restore; redraws move up `_notice_rows + 1`, so
   the bar updates in place instead of being recreated per confirmation.
+- The queue snapshot must be *below* the bar, and `view.start` runs before the
+  bar exists. `Terminal.defer` holds a renderer until the bar's first frame
+  (`ReviewProgress.on_first_frame` → `Terminal.flush_deferred`), then inserts
+  it between bar and prompt; `run_queue` flushes leftovers on teardown when no
+  bar ever drew. Do not print the snapshot directly while `footer` is set.
 - Raised/blank input lines move the terminal cursor one row down. The reader
   calls `Terminal.refresh_footer` (`on_blank`) to reprint the prompt; without
   it the next bar frame would land on the prompt row. `finish()` erases the

@@ -49,6 +49,7 @@ class ReviewProgress:
         lock: AbstractContextManager[object] | None = None,
         on_finish: Callable[[], None] | None = None,
         footer: str | None = None,
+        on_first_frame: Callable[[], None] | None = None,
     ) -> None:
         self.total = max(total, 0)
         self.stream = sys.stderr if stream is None else stream
@@ -67,6 +68,9 @@ class ReviewProgress:
             nullcontext() if lock is None else lock
         )
         self.on_finish = on_finish
+        # Runs once, right after the first footer frame: the terminal uses
+        # it to place queue rows below the bar instead of above it.
+        self.on_first_frame = on_first_frame
         self._finished = False
         if columns is None:
             columns = shutil.get_terminal_size((DEFAULT_COLUMNS, 24)).columns
@@ -115,6 +119,11 @@ class ReviewProgress:
                 # after it is overwritten by later frames.
                 self._footer_live = True
                 self.stream.write("\r" + frame + "\n" + self.footer)
+                self.stream.flush()
+                if self.on_first_frame is not None:
+                    # Queue rows held while the wrapper was still starting
+                    # go between the fresh bar and the prompt, never above.
+                    self.on_first_frame()
             else:
                 # Cursor save/restore: go up over the footer and its notice
                 # rows, redraw only the bar, then put the cursor back after

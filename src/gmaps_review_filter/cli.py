@@ -227,7 +227,13 @@ class _QueueView:
             # chance here (network is free before the browser launches), so
             # the list does not keep showing a raw URL.
             self._queue.refresh_labels([url, *self._queue.pending_urls()])
-            self._terminal.write("\n".join(self._rows(url)))
+            if self._terminal.footer is not None:
+                # The bar has not drawn yet; print the list once it has, so
+                # the queue sits below the bar instead of above it. Rendering
+                # late also picks up URLs queued during that startup window.
+                self._terminal.defer(lambda: "\n".join(self._rows(url)))
+            else:
+                self._terminal.write("\n".join(self._rows(url)))
 
     def finish(self) -> None:
         """Clear the current spot once its scrape returns."""
@@ -250,6 +256,14 @@ class _QueueView:
                 position = self._queue.position(result.url)
                 if position is not None:
                     row = f"{position}. {label}"
+            if row is not None and self._terminal.footer is not None:
+                if self._terminal.bar_live:
+                    self._terminal.defer(lambda: row)
+                else:
+                    # Pre-bar: the deferred snapshot will list this spot in
+                    # order, so only confirm the URL above the bar for now.
+                    self._terminal.write(_notice_text(result, label) or row)
+                return
             if row is not None:
                 self._terminal.write(row)
                 return
@@ -443,13 +457,13 @@ def run_queue(
                 break
             if not first and not as_json:
                 term.separator()
-            view.start(url)
-            # On a TTY the bar draws the prompt on the row below itself,
-            # so it survives every frame and typing happens there; piped
-            # stderr gets a plain line instead.
             if bar_mode:
+                # The bar draws the prompt on the row below itself; the
+                # queue snapshot is deferred until that first frame so the
+                # whole list sits underneath the bar.
                 term.footer = QUEUE_PROMPT
-            else:
+            view.start(url)
+            if not bar_mode:
                 term.write(QUEUE_PROMPT)
             try:
                 codes.append(
@@ -469,6 +483,7 @@ def run_queue(
                 )
             finally:
                 term.footer = None
+                term.flush_deferred()
                 view.finish()
             first = False
     except KeyboardInterrupt:

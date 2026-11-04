@@ -152,6 +152,51 @@ def test_refresh_footer_reprints_the_prompt_after_a_blank_line():
     assert stream.getvalue().endswith("\033[1A\r\033[K" + FOOTER)
 
 
+def test_deferred_rows_are_drawn_below_the_first_bar_frame():
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    terminal.footer = FOOTER
+    terminal.defer(lambda: "0. A")
+    assert stream.getvalue() == ""
+    bar = terminal.progress(10, label="Loading reviews", enabled=True)
+    bar.update(4)
+    text = stream.getvalue()
+    assert text.index("Loading reviews") < text.index("0. A")
+    assert text.endswith("0. A\n" + FOOTER)
+    # The inserted row is counted when the bar redraws.
+    bar.update(8)
+    assert stream.getvalue().endswith("\033[s\033[2A\r" + bar._frame(8) + "\033[u")
+
+
+def test_deferred_renderer_runs_only_when_the_bar_starts():
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    terminal.footer = FOOTER
+    calls = []
+
+    def render():
+        calls.append(stream.getvalue())
+        return "0. A"
+
+    terminal.defer(render)
+    bar = terminal.progress(10, label="Loading reviews", enabled=True)
+    assert calls == []
+    bar.update(4)
+    assert len(calls) == 1
+    assert "Loading reviews" in calls[0]
+
+
+def test_deferred_rows_flush_when_no_bar_ever_drew():
+    stream = io.StringIO()
+    terminal = Terminal(stream)
+    assert terminal.bar_live is False
+    terminal.defer(lambda: "0. A")
+    terminal.flush_deferred()
+    assert stream.getvalue() == "0. A\n"
+    terminal.flush_deferred()
+    assert stream.getvalue() == "0. A\n"
+
+
 def test_finished_footer_bar_falls_back_to_normal_writes():
     stream = io.StringIO()
     terminal = Terminal(stream)
